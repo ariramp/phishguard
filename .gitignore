@@ -1,0 +1,23 @@
+# Go
+backend/bin/
+backend/*.exe
+backend/*.out
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.mypy_cache/
+
+# Environment
+.env
+
+# Models
+ml_models/
+*.pt
+*.bin
+*.safetensors
+
+# VS Code
+.vscode/

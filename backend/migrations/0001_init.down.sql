@@ -1,0 +1,5 @@
+DROP TABLE IF EXISTS scan_results;
+DROP TABLE IF EXISTS extracted_urls;
+DROP TABLE IF EXISTS emails;
+DROP TABLE IF EXISTS accounts;
+DROP TABLE IF EXISTS model_versions;

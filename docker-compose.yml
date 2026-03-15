@@ -1,0 +1,39 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: phishguard
+      POSTGRES_USER: phishguard
+      POSTGRES_PASSWORD: phishguard
+    ports:
+      - "5432:5434"
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+
+  ml:
+    build:
+      context: ./ml/serving
+    ports:
+      - "8000:8000"
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+
+  backend:
+    build:
+      context: ./backend
+    environment:
+      HTTP_ADDR: ":8080"
+      DATABASE_URL: "postgres://phishguard:phishguard@db:5432/phishguard?sslmode=disable"
+      ML_BASE_URL: "http://ml:8000"
+      ML_TIMEOUT: "2s"
+      POLL_INTERVAL: "15m"
+    ports:
+      - "8080:8080"
+    depends_on:
+      - db
+      - ml
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
