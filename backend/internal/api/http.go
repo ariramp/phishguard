@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 
+	"phishguard/backend/internal/mail"
 	"phishguard/backend/internal/service"
 	"phishguard/backend/internal/store"
 
@@ -15,9 +16,10 @@ func NewRouter(db *store.DB, worker *service.Worker, logger *zap.Logger) http.Ha
 	r.Use(gin.Recovery())
 
 	h := &Handlers{
-		db:     db,
-		worker: worker,
-		logger: logger,
+		db:         db,
+		worker:     worker,
+		mailClient: mail.NewClient(),
+		logger:     logger,
 	}
 
 	r.GET("/healthz", h.Healthz)

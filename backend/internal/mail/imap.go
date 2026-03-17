@@ -3,8 +3,10 @@ package mail
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
+	"net"
 	"strings"
 	"time"
 
@@ -31,27 +33,51 @@ func NewClient() *Client {
 	return &Client{}
 }
 
-func (c *Client) FetchNewMessages(ctx context.Context, acc store.Account) ([]FetchedMessage, uint32, error) {
-	_ = ctx
+func (c *Client) dial(ctx context.Context, acc store.Account) (*imapclient.Client, error) {
+	dialer := net.Dialer{
+		Timeout: 10 * time.Second,
+	}
 
 	addr := fmt.Sprintf("%s:%d", acc.IMAPHost, acc.IMAPPort)
 
-	var cli *imapclient.Client
+	var conn net.Conn
 	var err error
 
 	if acc.IMAPTLS {
-		cli, err = imapclient.DialTLS(addr, nil)
+		conn, err = tls.DialWithDialer(&dialer, "tcp", addr, &tls.Config{
+			ServerName: acc.IMAPHost,
+		})
 	} else {
-		cli, err = imapclient.DialInsecure(addr, nil)
+		conn, err = dialer.DialContext(ctx, "tcp", addr)
 	}
 	if err != nil {
-		return nil, 0, err
+		return nil, fmt.Errorf("dial: %w", err)
 	}
-	defer cli.Close()
+
+	cli := imapclient.New(conn, nil)
 
 	if err := cli.Login(acc.Username, string(acc.PasswordEnc)).Wait(); err != nil {
-		return nil, 0, err
+		cli.Close()
+		return nil, fmt.Errorf("login: %w", err)
 	}
+
+	return cli, nil
+}
+
+func safeLogout(cli *imapclient.Client) {
+	if cli == nil {
+		return
+	}
+	_ = cli.Logout().Wait()
+	_ = cli.Close()
+}
+
+func (c *Client) GetCurrentMaxUID(ctx context.Context, acc store.Account) (uint32, error) {
+	cli, err := c.dial(ctx, acc)
+	if err != nil {
+		return 0, err
+	}
+	defer safeLogout(cli)
 
 	mbox := acc.SourceMailbox
 	if mbox == "" {
@@ -60,22 +86,54 @@ func (c *Client) FetchNewMessages(ctx context.Context, acc store.Account) ([]Fet
 
 	selected, err := cli.Select(mbox, nil).Wait()
 	if err != nil {
-		return nil, 0, err
+		return 0, fmt.Errorf("select mailbox %s: %w", mbox, err)
 	}
 
 	if selected == nil || selected.NumMessages == 0 {
-		_ = cli.Logout().Wait()
+		return 0, nil
+	}
+
+	if selected.UIDNext > 0 {
+		return uint32(selected.UIDNext - 1), nil
+	}
+
+	return 0, nil
+}
+
+func (c *Client) FetchNewMessages(ctx context.Context, acc store.Account) ([]FetchedMessage, uint32, error) {
+	cli, err := c.dial(ctx, acc)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer safeLogout(cli)
+
+	mbox := acc.SourceMailbox
+	if mbox == "" {
+		mbox = "INBOX"
+	}
+
+	selected, err := cli.Select(mbox, nil).Wait()
+	if err != nil {
+		return nil, 0, fmt.Errorf("select mailbox %s: %w", mbox, err)
+	}
+
+	if selected == nil || selected.NumMessages == 0 {
 		return nil, 0, nil
 	}
 
-	startUID := imap.UID(acc.LastUID + 1)
+	startUID := uint32(acc.LastUID + 1)
 	if startUID == 0 {
 		startUID = 1
 	}
 
-	// Берём диапазон UID: от last_uid+1 до максимума
-	var uidSet imap.UIDSet
-	uidSet.AddRange(startUID, imap.UID(^uint32(0)))
+	var endUID uint32
+	if selected.UIDNext > 0 {
+		endUID = uint32(selected.UIDNext - 1)
+	}
+
+	if endUID == 0 || startUID > endUID {
+		return nil, 0, nil
+	}
 
 	fetchOptions := &imap.FetchOptions{
 		UID:          true,
@@ -86,15 +144,24 @@ func (c *Client) FetchNewMessages(ctx context.Context, acc store.Account) ([]Fet
 		},
 	}
 
-	messages, err := cli.Fetch(uidSet, fetchOptions).Collect()
-	if err != nil {
-		return nil, 0, err
-	}
-
 	var out []FetchedMessage
 	var maxUID uint32
 
-	for _, msg := range messages {
+	for uid := startUID; uid <= endUID; uid++ {
+		var uidSet imap.UIDSet
+		uidSet.AddNum(imap.UID(uid))
+
+		messages, err := cli.Fetch(uidSet, fetchOptions).Collect()
+		if err != nil {
+			// не валим весь poll из-за одного письма
+			continue
+		}
+		if len(messages) == 0 {
+			continue
+		}
+
+		msg := messages[0]
+
 		fm := FetchedMessage{
 			UID: uint32(msg.UID),
 		}
@@ -129,10 +196,6 @@ func (c *Client) FetchNewMessages(ctx context.Context, acc store.Account) ([]Fet
 		}
 
 		out = append(out, fm)
-	}
-
-	if err := cli.Logout().Wait(); err != nil {
-		return nil, 0, err
 	}
 
 	return out, maxUID, nil

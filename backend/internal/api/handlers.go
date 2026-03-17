@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"time"
 
+	"phishguard/backend/internal/mail"
 	"phishguard/backend/internal/service"
 	"phishguard/backend/internal/store"
 
@@ -12,9 +13,10 @@ import (
 )
 
 type Handlers struct {
-	db     *store.DB
-	worker *service.Worker
-	logger *zap.Logger
+	db         *store.DB
+	worker     *service.Worker
+	mailClient *mail.Client
+	logger     *zap.Logger
 }
 
 func (h *Handlers) Healthz(c *gin.Context) {
@@ -65,18 +67,29 @@ func (h *Handlers) CreateAccount(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusCreated, acc)
-}
+	maxUID, err := h.mailClient.GetCurrentMaxUID(c.Request.Context(), *acc)
+	if err != nil {
+		h.logger.Error("init max uid failed", zap.Error(err))
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "account created, but IMAP init failed: " + err.Error(),
+		})
+		return
+	}
 
-func (h *Handlers) PollOnce(c *gin.Context) {
-	if err := h.worker.PollOnce(c.Request.Context()); err != nil {
-		h.logger.Error("poll once failed", zap.Error(err))
+	if err := h.db.UpdateAccountLastUID(c.Request.Context(), acc.ID, int64(maxUID)); err != nil {
+		h.logger.Error("update initial last uid failed", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	acc.LastUID = int64(maxUID)
+
+	c.JSON(http.StatusCreated, gin.H{
+		"account": acc,
+		"message": "account created; existing emails skipped; only new emails will be processed",
+	})
 }
+
 func (h *Handlers) GetHistory(c *gin.Context) {
 	items, err := h.db.GetHistory(c.Request.Context(), 100)
 	if err != nil {
@@ -99,4 +112,14 @@ func (h *Handlers) GetStats(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, stats)
+}
+
+func (h *Handlers) PollOnce(c *gin.Context) {
+	if err := h.worker.PollOnce(c.Request.Context()); err != nil {
+		h.logger.Error("poll once failed", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
