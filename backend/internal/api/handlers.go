@@ -123,3 +123,18 @@ func (h *Handlers) PollOnce(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
+func (h *Handlers) GetTimeSeriesStats(c *gin.Context) {
+	period := c.DefaultQuery("period", "week")
+
+	items, err := h.db.GetTimeSeriesStats(c.Request.Context(), period)
+	if err != nil {
+		h.logger.Error("get timeseries stats failed", zap.Error(err))
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"period": period,
+		"items":  items,
+	})
+}

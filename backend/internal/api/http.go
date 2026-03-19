@@ -29,6 +29,7 @@ func NewRouter(db *store.DB, worker *service.Worker, logger *zap.Logger) http.Ha
 
 	r.GET("/api/v1/history", h.GetHistory)
 	r.GET("/api/v1/stats", h.GetStats)
+	r.GET("/api/v1/stats/timeseries", h.GetTimeSeriesStats)
 
 	r.POST("/api/v1/poll/once", h.PollOnce)
 

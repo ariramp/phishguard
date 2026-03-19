@@ -57,7 +57,20 @@ CREATE TABLE IF NOT EXISTS scan_results (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS idx_emails_account_id ON emails(account_id);
-CREATE INDEX IF NOT EXISTS idx_urls_email_id ON extracted_urls(email_id);
-CREATE INDEX IF NOT EXISTS idx_scan_results_url_id ON scan_results(url_id);
-CREATE INDEX IF NOT EXISTS idx_scan_results_risk ON scan_results(risk);
+CREATE INDEX IF NOT EXISTS idx_emails_account_id
+  ON emails(account_id);
+
+CREATE INDEX IF NOT EXISTS idx_urls_email_id
+  ON extracted_urls(email_id);
+
+CREATE INDEX IF NOT EXISTS idx_scan_results_url_id
+  ON scan_results(url_id);
+
+CREATE INDEX IF NOT EXISTS idx_scan_results_risk
+  ON scan_results(risk);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_emails_account_message_id
+  ON emails(account_id, message_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_urls_email_normalized_url
+  ON extracted_urls(email_id, normalized_url);

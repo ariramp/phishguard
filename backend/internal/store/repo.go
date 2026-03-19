@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -350,4 +351,104 @@ func (d *DB) GetStats(ctx context.Context) (*Stats, error) {
 	}
 
 	return stats, nil
+}
+
+type TimeSeriesItem struct {
+	Bucket          time.Time `json:"bucket"`
+	TotalCount      int       `json:"total_count"`
+	SafeCount       int       `json:"safe_count"`
+	SuspiciousCount int       `json:"suspicious_count"`
+	PhishingCount   int       `json:"phishing_count"`
+}
+
+func (d *DB) GetTimeSeriesStats(ctx context.Context, period string) ([]TimeSeriesItem, error) {
+	var q string
+
+	switch period {
+	case "day":
+		q = `
+			SELECT
+				date_trunc('hour', COALESCE(e.received_at, s.created_at)) AS bucket,
+				COUNT(*) AS total_count,
+				COUNT(*) FILTER (WHERE s.verdict = 'safe') AS safe_count,
+				COUNT(*) FILTER (WHERE s.verdict = 'suspicious') AS suspicious_count,
+				COUNT(*) FILTER (WHERE s.verdict = 'phishing') AS phishing_count
+			FROM scan_results s
+			JOIN extracted_urls u ON u.id = s.url_id
+			JOIN emails e ON e.id = u.email_id
+			WHERE COALESCE(e.received_at, s.created_at) >= now() - interval '24 hours'
+			GROUP BY bucket
+			ORDER BY bucket
+		`
+	case "week":
+		q = `
+			SELECT
+				date_trunc('day', COALESCE(e.received_at, s.created_at)) AS bucket,
+				COUNT(*) AS total_count,
+				COUNT(*) FILTER (WHERE s.verdict = 'safe') AS safe_count,
+				COUNT(*) FILTER (WHERE s.verdict = 'suspicious') AS suspicious_count,
+				COUNT(*) FILTER (WHERE s.verdict = 'phishing') AS phishing_count
+			FROM scan_results s
+			JOIN extracted_urls u ON u.id = s.url_id
+			JOIN emails e ON e.id = u.email_id
+			WHERE COALESCE(e.received_at, s.created_at) >= now() - interval '7 days'
+			GROUP BY bucket
+			ORDER BY bucket
+		`
+	case "month":
+		q = `
+			SELECT
+				date_trunc('day', COALESCE(e.received_at, s.created_at)) AS bucket,
+				COUNT(*) AS total_count,
+				COUNT(*) FILTER (WHERE s.verdict = 'safe') AS safe_count,
+				COUNT(*) FILTER (WHERE s.verdict = 'suspicious') AS suspicious_count,
+				COUNT(*) FILTER (WHERE s.verdict = 'phishing') AS phishing_count
+			FROM scan_results s
+			JOIN extracted_urls u ON u.id = s.url_id
+			JOIN emails e ON e.id = u.email_id
+			WHERE COALESCE(e.received_at, s.created_at) >= now() - interval '1 month'
+			GROUP BY bucket
+			ORDER BY bucket
+		`
+	case "year":
+		q = `
+			SELECT
+				date_trunc('month', COALESCE(e.received_at, s.created_at)) AS bucket,
+				COUNT(*) AS total_count,
+				COUNT(*) FILTER (WHERE s.verdict = 'safe') AS safe_count,
+				COUNT(*) FILTER (WHERE s.verdict = 'suspicious') AS suspicious_count,
+				COUNT(*) FILTER (WHERE s.verdict = 'phishing') AS phishing_count
+			FROM scan_results s
+			JOIN extracted_urls u ON u.id = s.url_id
+			JOIN emails e ON e.id = u.email_id
+			WHERE COALESCE(e.received_at, s.created_at) >= now() - interval '1 year'
+			GROUP BY bucket
+			ORDER BY bucket
+		`
+	default:
+		return nil, fmt.Errorf("unsupported period: %s", period)
+	}
+
+	rows, err := d.Pool.Query(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []TimeSeriesItem
+	for rows.Next() {
+		var item TimeSeriesItem
+		if err := rows.Scan(
+			&item.Bucket,
+			&item.TotalCount,
+			&item.SafeCount,
+			&item.SuspiciousCount,
+			&item.PhishingCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+
+	return items, rows.Err()
 }
