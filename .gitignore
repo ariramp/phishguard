@@ -2,6 +2,7 @@
 backend/bin/
 backend/*.exe
 backend/*.out
+.gocache/
 
 # Python
 __pycache__/
@@ -18,6 +19,8 @@ ml_models/
 *.pt
 *.bin
 *.safetensors
+ml/data/raw/
+ml/data/processed/*.csv
 
 # VS Code
 .vscode/

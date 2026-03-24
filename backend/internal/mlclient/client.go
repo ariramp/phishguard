@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"time"
 )
@@ -40,11 +42,14 @@ type predictResp struct {
 }
 
 func (h *httpClient) PredictURL(ctx context.Context, url string, subject string, snippet string) (float32, int16, string, map[string]any, error) {
-	reqBody, _ := json.Marshal(predictReq{
+	reqBody, err := json.Marshal(predictReq{
 		URL:     url,
 		Subject: subject,
 		Snippet: snippet,
 	})
+	if err != nil {
+		return 0, 0, "", nil, err
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, h.baseURL+"/v1/predict/url", bytes.NewReader(reqBody))
 	if err != nil {
@@ -57,6 +62,11 @@ func (h *httpClient) PredictURL(ctx context.Context, url string, subject string,
 		return 0, 0, "", nil, err
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return 0, 0, "", nil, fmt.Errorf("ml service returned %s: %s", resp.Status, string(body))
+	}
 
 	var pr predictResp
 	if err := json.NewDecoder(resp.Body).Decode(&pr); err != nil {

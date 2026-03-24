@@ -20,10 +20,7 @@ def healthz():
 
 @app.get("/v1/model")
 def model_info():
-    return {
-        "model_version": model.model_version,
-        "base_model": model.base_model,
-    }
+    return model.model_info()
 
 
 @app.post("/v1/predict/url")
