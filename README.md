@@ -8,6 +8,7 @@ PhishGuard is a local service for detecting phishing links in email.
 - Python ML service for URL scoring, email text scoring, and final fusion
 - PostgreSQL for persistence
 - Docker Compose for local development
+- Built-in web console served by the Go backend
 
 ## ML Pipeline
 
@@ -45,3 +46,15 @@ The current ML architecture uses three layers:
 - URL evaluation uses a domain-grouped split, and text evaluation uses grouped exact-text splits to reduce leakage between train and test.
 
 Generated model artifacts are stored in `ml_models/` and mounted into the Python serving container.
+
+## Web Console
+
+Open `http://localhost:8080/` after `docker compose up --build`.
+
+The interface currently supports:
+
+- viewing service statistics
+- viewing timeseries data
+- adding IMAP accounts
+- triggering manual polling from the interface
+- viewing the latest phishing detection history

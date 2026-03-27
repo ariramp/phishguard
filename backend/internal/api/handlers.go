@@ -5,16 +5,19 @@ import (
 	"time"
 
 	"phishguard/backend/internal/mail"
+	"phishguard/backend/internal/mlclient"
 	"phishguard/backend/internal/service"
 	"phishguard/backend/internal/store"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
 
 type Handlers struct {
 	db         *store.DB
 	worker     *service.Worker
+	ml         mlclient.Client
 	mailClient *mail.Client
 	logger     *zap.Logger
 }
@@ -103,6 +106,23 @@ func (h *Handlers) GetHistory(c *gin.Context) {
 	})
 }
 
+func (h *Handlers) GetHistoryDetails(c *gin.Context) {
+	emailID, err := uuid.Parse(c.Param("emailID"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid email id"})
+		return
+	}
+
+	items, err := h.db.GetHistoryDetails(c.Request.Context(), emailID)
+	if err != nil {
+		h.logger.Error("get history details failed", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"items": items})
+}
+
 func (h *Handlers) GetStats(c *gin.Context) {
 	stats, err := h.db.GetStats(c.Request.Context())
 	if err != nil {
@@ -123,6 +143,51 @@ func (h *Handlers) PollOnce(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
+
+type manualCheckReq struct {
+	URL     string `json:"url" binding:"required"`
+	Subject string `json:"subject"`
+	Snippet string `json:"snippet"`
+}
+
+func (h *Handlers) ManualCheck(c *gin.Context) {
+	var req manualCheckReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	score, risk, modelVersion, features, err := h.ml.PredictURL(
+		c.Request.Context(),
+		req.URL,
+		req.Subject,
+		req.Snippet,
+	)
+	if err != nil {
+		h.logger.Error("manual ml predict failed", zap.Error(err))
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+
+	verdict := "safe"
+	if risk >= 3 || score >= 0.8 {
+		verdict = "phishing"
+	} else if risk == 2 || score >= 0.5 {
+		verdict = "suspicious"
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"url":           req.URL,
+		"subject":       req.Subject,
+		"snippet":       req.Snippet,
+		"score":         score,
+		"risk":          risk,
+		"verdict":       verdict,
+		"model_version": modelVersion,
+		"features":      features,
+	})
+}
+
 func (h *Handlers) GetTimeSeriesStats(c *gin.Context) {
 	period := c.DefaultQuery("period", "week")
 

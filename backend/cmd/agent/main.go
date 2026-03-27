@@ -31,7 +31,7 @@ func main() {
 
 	ml := mlclient.NewHTTP(cfg.MLBaseURL, cfg.MLTimeout)
 	worker := service.NewWorker(db, ml, logger)
-	router := api.NewRouter(db, worker, logger)
+	router := api.NewRouter(db, worker, ml, logger)
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,

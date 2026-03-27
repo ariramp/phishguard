@@ -180,6 +180,13 @@ func (c *Client) FetchNewMessages(ctx context.Context, acc store.Account) ([]Fet
 			}
 		}
 
+		if strings.TrimSpace(fm.MessageID) == "" {
+			// Some mailboxes do not expose Message-ID reliably. Use a stable
+			// fallback derived from the IMAP UID so we do not reinsert the same
+			// message on the next polling cycle.
+			fm.MessageID = fmt.Sprintf("<uid-%d@%s>", fm.UID, acc.EmailAddress)
+		}
+
 		if !msg.InternalDate.IsZero() {
 			t := msg.InternalDate
 			fm.ReceivedAt = &t
@@ -199,6 +206,92 @@ func (c *Client) FetchNewMessages(ctx context.Context, acc store.Account) ([]Fet
 	}
 
 	return out, maxUID, nil
+}
+
+func (c *Client) ApplyHighRiskAction(ctx context.Context, acc store.Account, uid uint32) error {
+	action := strings.ToUpper(strings.TrimSpace(acc.ActionOnHigh))
+	if action == "" || action == "NONE" {
+		return nil
+	}
+
+	cli, err := c.dial(ctx, acc)
+	if err != nil {
+		return err
+	}
+	defer safeLogout(cli)
+
+	mbox := acc.SourceMailbox
+	if mbox == "" {
+		mbox = "INBOX"
+	}
+
+	if _, err := cli.Select(mbox, nil).Wait(); err != nil {
+		return fmt.Errorf("select mailbox %s: %w", mbox, err)
+	}
+
+	var uidSet imap.UIDSet
+	uidSet.AddNum(imap.UID(uid))
+
+	switch action {
+	case "MOVE":
+		target := strings.TrimSpace(acc.TargetMailbox)
+		if target == "" {
+			target = "Phishing"
+		}
+		if _, err := cli.Move(uidSet, target).Wait(); err != nil {
+			if errCreate := ensureMailbox(cli, target); errCreate != nil {
+				return fmt.Errorf("move message to %s: %w", target, err)
+			}
+			if _, err := cli.Move(uidSet, target).Wait(); err != nil {
+				return fmt.Errorf("move message to %s after create: %w", target, err)
+			}
+		}
+		return nil
+	case "COPY":
+		target := strings.TrimSpace(acc.TargetMailbox)
+		if target == "" {
+			target = "Phishing"
+		}
+		if _, err := cli.Copy(uidSet, target).Wait(); err != nil {
+			if errCreate := ensureMailbox(cli, target); errCreate != nil {
+				return fmt.Errorf("copy message to %s: %w", target, err)
+			}
+			if _, err := cli.Copy(uidSet, target).Wait(); err != nil {
+				return fmt.Errorf("copy message to %s after create: %w", target, err)
+			}
+		}
+		return nil
+	case "TAG":
+		storeFlags := &imap.StoreFlags{
+			Op:     imap.StoreFlagsAdd,
+			Silent: true,
+			Flags:  []imap.Flag{imap.FlagFlagged},
+		}
+		if err := cli.Store(uidSet, storeFlags, nil).Close(); err != nil {
+			return fmt.Errorf("flag message: %w", err)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported action_on_high: %s", action)
+	}
+}
+
+func ensureMailbox(cli *imapclient.Client, mailbox string) error {
+	if strings.TrimSpace(mailbox) == "" {
+		return nil
+	}
+	if err := cli.Create(mailbox, nil).Wait(); err != nil && !mailboxAlreadyExists(err) {
+		return err
+	}
+	return nil
+}
+
+func mailboxAlreadyExists(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "already exists") || strings.Contains(msg, "mailbox exists")
 }
 
 func extractBodies(raw []byte) (string, string) {

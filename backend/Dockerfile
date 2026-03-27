@@ -19,5 +19,6 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /app/phishguard-agent .
+COPY --from=build /app/web ./web
 EXPOSE 8080
 CMD ["./phishguard-agent"]

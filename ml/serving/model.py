@@ -73,6 +73,24 @@ KNOWN_BRANDS = (
     "wildberries",
 )
 
+TRUSTED_DOMAINS = {
+    "google.com",
+    "googleapis.com",
+    "microsoft.com",
+    "github.com",
+    "apple.com",
+    "amazon.com",
+    "yandex.ru",
+    "mail.ru",
+    "gosuslugi.ru",
+    "sberbank.ru",
+    "tbank.ru",
+    "tinkoff.ru",
+    "vk.com",
+    "wildberries.ru",
+    "ozon.ru",
+}
+
 SHORTENERS = {
     "bit.ly",
     "tinyurl.com",
@@ -186,6 +204,13 @@ def _brand_similarity(host: str) -> float:
     return round(max(0.0, min(1.0, best)), 4)
 
 
+def _is_trusted_host(host: str) -> bool:
+    host = (host or "").lower()
+    if not host:
+        return False
+    return any(host == domain or host.endswith("." + domain) for domain in TRUSTED_DOMAINS)
+
+
 def extract_url_features(url: str) -> dict[str, Any]:
     parsed = urlparse(url)
     host = (parsed.hostname or "").lower()
@@ -285,6 +310,18 @@ class URLClassifier:
             score += 0.04
         return max(0.0, min(1.0, score))
 
+    def _apply_trusted_domain_adjustment(self, score: float, features: dict[str, Any]) -> float:
+        if not _is_trusted_host(features["host"]):
+            return score
+
+        if features["has_ip_host"] or features["has_punycode"] or features["has_at_symbol"]:
+            return score
+
+        adjusted = min(score, 0.12)
+        if features["is_https"]:
+            adjusted = min(adjusted, 0.08)
+        return adjusted
+
     def predict(self, url: str) -> tuple[float, dict[str, Any]]:
         features = extract_url_features(url)
         if self.loaded and self._bundle is not None:
@@ -302,7 +339,10 @@ class URLClassifier:
             score = self._heuristic_score(features)
             mode = "fallback"
 
+        score = self._apply_trusted_domain_adjustment(score, features)
+
         features["inference_mode"] = mode
+        features["trusted_domain"] = _bool_to_int(_is_trusted_host(features["host"]))
         if self.load_error:
             features["load_error"] = self.load_error
         return score, features

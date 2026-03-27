@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PhishGuard Console</title>
+    <link rel="stylesheet" href="/assets/styles.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">Phishing Monitoring Console</p>
+          <h1>PhishGuard</h1>
+          <p class="hero-copy">
+            Панель оператора для подключения почтовых ящиков, запуска сканирования
+            и просмотра результатов детекции фишинговых ссылок.
+          </p>
+        </div>
+        <div class="hero-side">
+          <div class="status-card">
+            <span class="status-dot" id="health-dot"></span>
+            <div>
+              <strong>Состояние сервиса</strong>
+              <p id="health-label">Проверка...</p>
+            </div>
+          </div>
+          <div class="toolbar">
+            <button id="refresh-all" class="button button-secondary">Обновить данные</button>
+            <button id="poll-once" class="button">Сканировать сейчас</button>
+          </div>
+        </div>
+      </header>
+
+      <main class="layout">
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Общая статистика</h2>
+            <p>Сводные показатели по аккаунтам, письмам, ссылкам и результатам детекции.</p>
+          </div>
+          <div class="stats-grid" id="stats-grid"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Динамика событий</h2>
+            <div class="inline-controls">
+              <label for="period-select">Период</label>
+              <select id="period-select">
+                <option value="day">24 часа</option>
+                <option value="week" selected>7 дней</option>
+                <option value="month">Месяц</option>
+                <option value="year">Год</option>
+              </select>
+            </div>
+          </div>
+          <div id="chart" class="chart"></div>
+        </section>
+
+        <section class="panel form-panel">
+          <div class="panel-head">
+            <h2>Подключение почтового аккаунта</h2>
+            <p>Добавьте IMAP-ящик для автоматического мониторинга входящих писем.</p>
+          </div>
+          <form id="account-form" class="form-grid">
+            <label>
+              <span>Email address</span>
+              <input name="email_address" type="email" required placeholder="user@example.com" />
+            </label>
+            <label>
+              <span>IMAP host</span>
+              <input name="imap_host" required placeholder="imap.example.com" />
+            </label>
+            <label>
+              <span>IMAP port</span>
+              <input name="imap_port" type="number" value="993" />
+            </label>
+            <label>
+              <span>Username</span>
+              <input name="username" required placeholder="user@example.com" />
+            </label>
+            <label class="wide">
+              <span>Password</span>
+              <input name="password" type="password" required />
+            </label>
+            <label>
+              <span>Mailbox</span>
+              <input name="source_mailbox" value="INBOX" />
+            </label>
+            <label>
+              <span>Poll interval (sec)</span>
+              <input name="poll_interval_seconds" type="number" value="900" />
+            </label>
+            <label>
+              <span>Action on high risk</span>
+              <select name="action_on_high">
+                <option value="MOVE" selected>MOVE</option>
+                <option value="TAG">TAG</option>
+                <option value="NONE">NONE</option>
+              </select>
+            </label>
+            <label>
+              <span>Target mailbox</span>
+              <input name="target_mailbox" value="Phishing" />
+            </label>
+            <label class="checkbox">
+              <input name="imap_tls" type="checkbox" checked />
+              <span>Use TLS</span>
+            </label>
+            <div class="form-actions wide">
+              <button type="submit" class="button">Сохранить аккаунт</button>
+              <p id="form-status" class="muted">Заполните форму и сохраните настройки.</p>
+            </div>
+          </form>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Ручная проверка</h2>
+            <p>Проверьте отдельную ссылку и текст письма без ожидания очередного IMAP-опроса.</p>
+          </div>
+          <form id="manual-check-form" class="form-grid">
+            <label class="wide">
+              <span>URL</span>
+              <input name="url" type="url" required placeholder="https://example.com/login" />
+            </label>
+            <label class="wide">
+              <span>Subject</span>
+              <input name="subject" placeholder="Subject line" />
+            </label>
+            <label class="wide">
+              <span>Snippet</span>
+              <input name="snippet" placeholder="Body preview or suspicious text" />
+            </label>
+            <div class="form-actions wide">
+              <button type="submit" class="button">Проверить ссылку</button>
+              <p id="manual-check-status" class="muted">Введите ссылку и, при необходимости, текст письма.</p>
+            </div>
+          </form>
+          <div id="manual-check-result" class="result-card is-empty">
+            <p class="muted">Здесь появится результат ручной проверки.</p>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Подключенные аккаунты</h2>
+            <p>Текущие настройки мониторинга и состояние последнего обработанного UID.</p>
+          </div>
+          <div id="accounts-list" class="account-list"></div>
+        </section>
+
+        <section class="panel wide-panel">
+          <div class="panel-head">
+            <div>
+              <h2>История обнаружений</h2>
+              <p>Каждая строка соответствует письму, а не отдельной ссылке.</p>
+            </div>
+            <div class="inline-controls history-controls">
+              <label for="history-verdict-filter">Verdict</label>
+              <select id="history-verdict-filter">
+                <option value="all">Все</option>
+                <option value="phishing">Phishing</option>
+                <option value="suspicious">Suspicious</option>
+                <option value="safe">Safe</option>
+              </select>
+              <input id="history-search" type="search" placeholder="Поиск по теме, отправителю, домену" />
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Время</th>
+                  <th>Аккаунт</th>
+                  <th>Отправитель</th>
+                  <th>Тема</th>
+                  <th>URL count</th>
+                  <th>Top domain</th>
+                  <th>Max score</th>
+                  <th>Max risk</th>
+                  <th>Вердикт</th>
+                </tr>
+              </thead>
+              <tbody id="history-body"></tbody>
+            </table>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <template id="stat-card-template">
+      <article class="stat-card">
+        <span class="stat-label"></span>
+        <strong class="stat-value"></strong>
+      </article>
+    </template>
+
+    <script src="/assets/app.js" defer></script>
+  </body>
+</html>

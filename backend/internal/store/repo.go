@@ -244,17 +244,18 @@ func (d *DB) InsertScanResult(ctx context.Context, s ScanResultRecord) (*ScanRes
 }
 
 type HistoryItem struct {
-	EmailAddress  string    `json:"email_address"`
-	Subject       string    `json:"subject"`
-	Sender        string    `json:"sender"`
-	RawURL        string    `json:"raw_url"`
-	NormalizedURL string    `json:"normalized_url"`
-	Domain        string    `json:"domain"`
-	ModelVersion  string    `json:"model_version"`
-	Score         float32   `json:"score"`
-	Risk          int16     `json:"risk"`
-	Verdict       string    `json:"verdict"`
-	CheckedAt     time.Time `json:"checked_at"`
+	EmailID      uuid.UUID `json:"email_id"`
+	EmailAddress string    `json:"email_address"`
+	Subject      string    `json:"subject"`
+	Sender       string    `json:"sender"`
+	MessageID    string    `json:"message_id"`
+	URLCount     int       `json:"url_count"`
+	TopDomain    string    `json:"top_domain"`
+	ModelVersion string    `json:"model_version"`
+	MaxScore     float32   `json:"max_score"`
+	MaxRisk      int16     `json:"max_risk"`
+	Verdict      string    `json:"verdict"`
+	CheckedAt    time.Time `json:"checked_at"`
 }
 
 type Stats struct {
@@ -275,22 +276,43 @@ func (d *DB) GetHistory(ctx context.Context, limit int) ([]HistoryItem, error) {
 
 	q := `
 		SELECT
-			a.email_address,
-			e.subject,
-			e.sender,
-			u.raw_url,
-			u.normalized_url,
-			u.domain,
-			s.model_version,
-			s.score,
-			s.risk,
-			s.verdict,
-			s.created_at
-		FROM scan_results s
-		JOIN extracted_urls u ON u.id = s.url_id
-		JOIN emails e ON e.id = u.email_id
-		JOIN accounts a ON a.id = e.account_id
-		ORDER BY s.created_at DESC
+			email_id,
+			email_address,
+			subject,
+			sender,
+			message_id,
+			url_count,
+			top_domain,
+			model_version,
+			max_score,
+			max_risk,
+			verdict,
+			checked_at
+		FROM (
+			SELECT
+				e.id AS email_id,
+				a.email_address,
+				e.subject,
+				e.sender,
+				e.message_id,
+				COUNT(DISTINCT u.id) AS url_count,
+				(ARRAY_AGG(u.domain ORDER BY s.risk DESC, s.score DESC, u.domain))[1] AS top_domain,
+				(ARRAY_AGG(s.model_version ORDER BY s.created_at DESC))[1] AS model_version,
+				MAX(s.score) AS max_score,
+				MAX(s.risk) AS max_risk,
+				CASE
+					WHEN BOOL_OR(s.verdict = 'phishing') THEN 'phishing'
+					WHEN BOOL_OR(s.verdict = 'suspicious') THEN 'suspicious'
+					ELSE 'safe'
+				END AS verdict,
+				MAX(s.created_at) AS checked_at
+			FROM scan_results s
+			JOIN extracted_urls u ON u.id = s.url_id
+			JOIN emails e ON e.id = u.email_id
+			JOIN accounts a ON a.id = e.account_id
+			GROUP BY a.email_address, e.id, e.message_id, e.subject, e.sender
+		) AS grouped
+		ORDER BY checked_at DESC
 		LIMIT $1
 	`
 
@@ -304,9 +326,65 @@ func (d *DB) GetHistory(ctx context.Context, limit int) ([]HistoryItem, error) {
 	for rows.Next() {
 		var item HistoryItem
 		if err := rows.Scan(
+			&item.EmailID,
 			&item.EmailAddress,
 			&item.Subject,
 			&item.Sender,
+			&item.MessageID,
+			&item.URLCount,
+			&item.TopDomain,
+			&item.ModelVersion,
+			&item.MaxScore,
+			&item.MaxRisk,
+			&item.Verdict,
+			&item.CheckedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+
+	return items, rows.Err()
+}
+
+type HistoryDetailItem struct {
+	RawURL        string    `json:"raw_url"`
+	NormalizedURL string    `json:"normalized_url"`
+	Domain        string    `json:"domain"`
+	ModelVersion  string    `json:"model_version"`
+	Score         float32   `json:"score"`
+	Risk          int16     `json:"risk"`
+	Verdict       string    `json:"verdict"`
+	CheckedAt     time.Time `json:"checked_at"`
+}
+
+func (d *DB) GetHistoryDetails(ctx context.Context, emailID uuid.UUID) ([]HistoryDetailItem, error) {
+	q := `
+		SELECT
+			u.raw_url,
+			u.normalized_url,
+			u.domain,
+			s.model_version,
+			s.score,
+			s.risk,
+			s.verdict,
+			s.created_at
+		FROM scan_results s
+		JOIN extracted_urls u ON u.id = s.url_id
+		WHERE u.email_id = $1
+		ORDER BY s.created_at DESC, s.risk DESC, s.score DESC
+	`
+
+	rows, err := d.Pool.Query(ctx, q, emailID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []HistoryDetailItem
+	for rows.Next() {
+		var item HistoryDetailItem
+		if err := rows.Scan(
 			&item.RawURL,
 			&item.NormalizedURL,
 			&item.Domain,

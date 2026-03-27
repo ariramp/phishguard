@@ -73,6 +73,7 @@ func (w *Worker) processAccount(ctx context.Context, acc store.Account) error {
 	emailsInserted := 0
 	urlsInserted := 0
 	scansInserted := 0
+	actionsApplied := 0
 
 	for _, msg := range msgs {
 		emailRec, err := w.db.InsertEmail(ctx, store.EmailRecord{
@@ -94,6 +95,7 @@ func (w *Worker) processAccount(ctx context.Context, acc store.Account) error {
 		}
 
 		emailsInserted++
+		highRiskDetected := false
 
 		urls := parser.ExtractURLs(msg.TextBody, msg.HTMLBody)
 		for _, rawURL := range urls {
@@ -133,6 +135,7 @@ func (w *Worker) processAccount(ctx context.Context, acc store.Account) error {
 			verdict := "safe"
 			if risk >= 3 || score >= 0.8 {
 				verdict = "phishing"
+				highRiskDetected = true
 			} else if risk == 2 || score >= 0.5 {
 				verdict = "suspicious"
 			}
@@ -152,6 +155,19 @@ func (w *Worker) processAccount(ctx context.Context, acc store.Account) error {
 
 			scansInserted++
 		}
+
+		if highRiskDetected {
+			if err := w.mailClient.ApplyHighRiskAction(ctx, acc, msg.UID); err != nil {
+				w.logger.Error("apply high-risk action failed",
+					zap.String("email", acc.EmailAddress),
+					zap.Uint32("uid", msg.UID),
+					zap.String("action", acc.ActionOnHigh),
+					zap.Error(err),
+				)
+			} else {
+				actionsApplied++
+			}
+		}
 	}
 
 	if maxUID > 0 {
@@ -166,6 +182,7 @@ func (w *Worker) processAccount(ctx context.Context, acc store.Account) error {
 		zap.Int("emails_inserted", emailsInserted),
 		zap.Int("urls_inserted", urlsInserted),
 		zap.Int("scans_inserted", scansInserted),
+		zap.Int("actions_applied", actionsApplied),
 		zap.Uint32("max_uid", maxUID),
 	)
 
