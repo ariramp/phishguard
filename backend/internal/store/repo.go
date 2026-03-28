@@ -106,6 +106,14 @@ type ScanResultRecord struct {
 	CreatedAt    time.Time
 }
 
+type RescoreCandidate struct {
+	URLID          uuid.UUID
+	NormalizedURL  string
+	EmailSubject   string
+	EmailBodyText  string
+	EmailBodyHTML  string
+}
+
 func (d *DB) CreateAccount(ctx context.Context, p CreateAccountParams) (*Account, error) {
 	q := `
 		INSERT INTO accounts (
@@ -484,6 +492,46 @@ func (d *DB) InsertScanResult(ctx context.Context, s ScanResultRecord) (*ScanRes
 	return &out, nil
 }
 
+func (d *DB) GetRescoreCandidates(ctx context.Context, limit int) ([]RescoreCandidate, error) {
+	if limit <= 0 || limit > 10000 {
+		limit = 1000
+	}
+
+	rows, err := d.Pool.Query(ctx, `
+		SELECT
+			u.id,
+			u.normalized_url,
+			e.subject,
+			e.body_text,
+			e.body_html
+		FROM extracted_urls u
+		JOIN emails e ON e.id = u.email_id
+		ORDER BY e.created_at DESC, u.created_at DESC
+		LIMIT $1
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []RescoreCandidate
+	for rows.Next() {
+		var item RescoreCandidate
+		if err := rows.Scan(
+			&item.URLID,
+			&item.NormalizedURL,
+			&item.EmailSubject,
+			&item.EmailBodyText,
+			&item.EmailBodyHTML,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+
+	return items, rows.Err()
+}
+
 func (d *DB) InsertAccountError(ctx context.Context, rec AccountErrorRecord) error {
 	rawDetails, err := json.Marshal(rec.Details)
 	if err != nil {
@@ -575,6 +623,17 @@ func (d *DB) GetHistory(ctx context.Context, limit int) ([]HistoryItem, error) {
 	}
 
 	q := `
+		WITH latest_scans AS (
+			SELECT DISTINCT ON (s.url_id)
+				s.url_id,
+				s.model_version,
+				s.score,
+				s.risk,
+				s.verdict,
+				s.created_at
+			FROM scan_results s
+			ORDER BY s.url_id, s.created_at DESC
+		)
 		SELECT
 			email_id,
 			email_address,
@@ -596,18 +655,18 @@ func (d *DB) GetHistory(ctx context.Context, limit int) ([]HistoryItem, error) {
 				e.sender,
 				e.message_id,
 				COUNT(DISTINCT u.id) AS url_count,
-				(ARRAY_AGG(u.domain ORDER BY s.risk DESC, s.score DESC, u.domain))[1] AS top_domain,
-				(ARRAY_AGG(s.model_version ORDER BY s.created_at DESC))[1] AS model_version,
-				MAX(s.score) AS max_score,
-				MAX(s.risk) AS max_risk,
+				(ARRAY_AGG(u.domain ORDER BY ls.risk DESC, ls.score DESC, u.domain))[1] AS top_domain,
+				(ARRAY_AGG(ls.model_version ORDER BY ls.created_at DESC))[1] AS model_version,
+				MAX(ls.score) AS max_score,
+				MAX(ls.risk) AS max_risk,
 				CASE
-					WHEN BOOL_OR(s.verdict = 'phishing') THEN 'phishing'
-					WHEN BOOL_OR(s.verdict = 'suspicious') THEN 'suspicious'
+					WHEN BOOL_OR(ls.verdict = 'phishing') THEN 'phishing'
+					WHEN BOOL_OR(ls.verdict = 'suspicious') THEN 'suspicious'
 					ELSE 'safe'
 				END AS verdict,
-				MAX(s.created_at) AS checked_at
-			FROM scan_results s
-			JOIN extracted_urls u ON u.id = s.url_id
+				MAX(ls.created_at) AS checked_at
+			FROM latest_scans ls
+			JOIN extracted_urls u ON u.id = ls.url_id
 			JOIN emails e ON e.id = u.email_id
 			JOIN accounts a ON a.id = e.account_id
 			GROUP BY a.email_address, e.id, e.message_id, e.subject, e.sender
@@ -660,19 +719,30 @@ type HistoryDetailItem struct {
 
 func (d *DB) GetHistoryDetails(ctx context.Context, emailID uuid.UUID) ([]HistoryDetailItem, error) {
 	q := `
+		WITH latest_scans AS (
+			SELECT DISTINCT ON (s.url_id)
+				s.url_id,
+				s.model_version,
+				s.score,
+				s.risk,
+				s.verdict,
+				s.created_at
+			FROM scan_results s
+			ORDER BY s.url_id, s.created_at DESC
+		)
 		SELECT
 			u.raw_url,
 			u.normalized_url,
 			u.domain,
-			s.model_version,
-			s.score,
-			s.risk,
-			s.verdict,
-			s.created_at
-		FROM scan_results s
-		JOIN extracted_urls u ON u.id = s.url_id
+			ls.model_version,
+			ls.score,
+			ls.risk,
+			ls.verdict,
+			ls.created_at
+		FROM latest_scans ls
+		JOIN extracted_urls u ON u.id = ls.url_id
 		WHERE u.email_id = $1
-		ORDER BY s.created_at DESC, s.risk DESC, s.score DESC
+		ORDER BY ls.created_at DESC, ls.risk DESC, ls.score DESC
 	`
 
 	rows, err := d.Pool.Query(ctx, q, emailID)
@@ -714,17 +784,19 @@ func (d *DB) GetStats(ctx context.Context) (*Stats, error) {
 	if err := d.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM extracted_urls`).Scan(&stats.TotalURLs); err != nil {
 		return nil, err
 	}
-	if err := d.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM scan_results`).Scan(&stats.TotalScans); err != nil {
-		return nil, err
-	}
-
-	if err := d.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM scan_results WHERE verdict = 'safe'`).Scan(&stats.SafeCount); err != nil {
-		return nil, err
-	}
-	if err := d.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM scan_results WHERE verdict = 'suspicious'`).Scan(&stats.SuspiciousCount); err != nil {
-		return nil, err
-	}
-	if err := d.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM scan_results WHERE verdict = 'phishing'`).Scan(&stats.PhishingCount); err != nil {
+	if err := d.Pool.QueryRow(ctx, `
+		WITH latest_scans AS (
+			SELECT DISTINCT ON (s.url_id) s.url_id, s.verdict
+			FROM scan_results s
+			ORDER BY s.url_id, s.created_at DESC
+		)
+		SELECT
+			COUNT(*) AS total_scans,
+			COUNT(*) FILTER (WHERE verdict = 'safe') AS safe_count,
+			COUNT(*) FILTER (WHERE verdict = 'suspicious') AS suspicious_count,
+			COUNT(*) FILTER (WHERE verdict = 'phishing') AS phishing_count
+		FROM latest_scans
+	`).Scan(&stats.TotalScans, &stats.SafeCount, &stats.SuspiciousCount, &stats.PhishingCount); err != nil {
 		return nil, err
 	}
 
@@ -796,24 +868,35 @@ func (d *DB) GetDetectionReport(ctx context.Context, period string, limit int) (
 	}
 
 	rows, err := d.Pool.Query(ctx, `
+		WITH latest_scans AS (
+			SELECT DISTINCT ON (s.url_id)
+				s.url_id,
+				s.created_at,
+				s.verdict,
+				s.score,
+				s.risk,
+				s.model_version
+			FROM scan_results s
+			ORDER BY s.url_id, s.created_at DESC
+		)
 		SELECT
-			s.created_at,
+			ls.created_at,
 			a.email_address,
 			e.sender,
 			e.subject,
 			u.raw_url,
 			u.normalized_url,
 			u.domain,
-			s.score,
-			s.risk,
-			s.verdict,
-			s.model_version
-		FROM scan_results s
-		JOIN extracted_urls u ON u.id = s.url_id
+			ls.score,
+			ls.risk,
+			ls.verdict,
+			ls.model_version
+		FROM latest_scans ls
+		JOIN extracted_urls u ON u.id = ls.url_id
 		JOIN emails e ON e.id = u.email_id
 		JOIN accounts a ON a.id = e.account_id
-		WHERE COALESCE(e.received_at, s.created_at) >= now() - ($1::interval)
-		ORDER BY s.created_at DESC
+		WHERE COALESCE(e.received_at, ls.created_at) >= now() - ($1::interval)
+		ORDER BY ls.created_at DESC
 		LIMIT $2
 	`, interval, limit)
 	if err != nil {
@@ -868,17 +951,25 @@ func (d *DB) GetSummaryReport(ctx context.Context, period string) (*SummaryRepor
 	}
 
 	err := d.Pool.QueryRow(ctx, `
+		WITH latest_scans AS (
+			SELECT DISTINCT ON (s.url_id)
+				s.url_id,
+				s.created_at,
+				s.verdict
+			FROM scan_results s
+			ORDER BY s.url_id, s.created_at DESC
+		)
 		SELECT
 			COUNT(DISTINCT e.id) AS total_emails,
 			COUNT(DISTINCT u.id) AS total_urls,
-			COUNT(s.id) AS total_scans,
-			COUNT(*) FILTER (WHERE s.verdict = 'safe') AS safe_count,
-			COUNT(*) FILTER (WHERE s.verdict = 'suspicious') AS suspicious_count,
-			COUNT(*) FILTER (WHERE s.verdict = 'phishing') AS phishing_count
-		FROM scan_results s
-		JOIN extracted_urls u ON u.id = s.url_id
+			COUNT(ls.url_id) AS total_scans,
+			COUNT(*) FILTER (WHERE ls.verdict = 'safe') AS safe_count,
+			COUNT(*) FILTER (WHERE ls.verdict = 'suspicious') AS suspicious_count,
+			COUNT(*) FILTER (WHERE ls.verdict = 'phishing') AS phishing_count
+		FROM latest_scans ls
+		JOIN extracted_urls u ON u.id = ls.url_id
 		JOIN emails e ON e.id = u.email_id
-		WHERE COALESCE(e.received_at, s.created_at) >= now() - ($1::interval)
+		WHERE COALESCE(e.received_at, ls.created_at) >= now() - ($1::interval)
 	`, interval).Scan(
 		&report.TotalEmails,
 		&report.TotalURLs,
@@ -892,11 +983,18 @@ func (d *DB) GetSummaryReport(ctx context.Context, period string) (*SummaryRepor
 	}
 
 	domainRows, err := d.Pool.Query(ctx, `
+		WITH latest_scans AS (
+			SELECT DISTINCT ON (s.url_id)
+				s.url_id,
+				s.created_at
+			FROM scan_results s
+			ORDER BY s.url_id, s.created_at DESC
+		)
 		SELECT u.domain, COUNT(*) AS cnt
-		FROM scan_results s
-		JOIN extracted_urls u ON u.id = s.url_id
+		FROM latest_scans ls
+		JOIN extracted_urls u ON u.id = ls.url_id
 		JOIN emails e ON e.id = u.email_id
-		WHERE COALESCE(e.received_at, s.created_at) >= now() - ($1::interval)
+		WHERE COALESCE(e.received_at, ls.created_at) >= now() - ($1::interval)
 		GROUP BY u.domain
 		ORDER BY cnt DESC, u.domain
 		LIMIT 10
@@ -918,12 +1016,19 @@ func (d *DB) GetSummaryReport(ctx context.Context, period string) (*SummaryRepor
 	}
 
 	accountRows, err := d.Pool.Query(ctx, `
+		WITH latest_scans AS (
+			SELECT DISTINCT ON (s.url_id)
+				s.url_id,
+				s.created_at
+			FROM scan_results s
+			ORDER BY s.url_id, s.created_at DESC
+		)
 		SELECT a.email_address, COUNT(*) AS cnt
-		FROM scan_results s
-		JOIN extracted_urls u ON u.id = s.url_id
+		FROM latest_scans ls
+		JOIN extracted_urls u ON u.id = ls.url_id
 		JOIN emails e ON e.id = u.email_id
 		JOIN accounts a ON a.id = e.account_id
-		WHERE COALESCE(e.received_at, s.created_at) >= now() - ($1::interval)
+		WHERE COALESCE(e.received_at, ls.created_at) >= now() - ($1::interval)
 		GROUP BY a.email_address
 		ORDER BY cnt DESC, a.email_address
 		LIMIT 10
@@ -953,61 +1058,93 @@ func (d *DB) GetTimeSeriesStats(ctx context.Context, period string) ([]TimeSerie
 	switch period {
 	case "day":
 		q = `
+			WITH latest_scans AS (
+				SELECT DISTINCT ON (s.url_id)
+					s.url_id,
+					s.created_at,
+					s.verdict
+				FROM scan_results s
+				ORDER BY s.url_id, s.created_at DESC
+			)
 			SELECT
-				date_trunc('hour', COALESCE(e.received_at, s.created_at)) AS bucket,
+				date_trunc('hour', COALESCE(e.received_at, ls.created_at)) AS bucket,
 				COUNT(*) AS total_count,
-				COUNT(*) FILTER (WHERE s.verdict = 'safe') AS safe_count,
-				COUNT(*) FILTER (WHERE s.verdict = 'suspicious') AS suspicious_count,
-				COUNT(*) FILTER (WHERE s.verdict = 'phishing') AS phishing_count
-			FROM scan_results s
-			JOIN extracted_urls u ON u.id = s.url_id
+				COUNT(*) FILTER (WHERE ls.verdict = 'safe') AS safe_count,
+				COUNT(*) FILTER (WHERE ls.verdict = 'suspicious') AS suspicious_count,
+				COUNT(*) FILTER (WHERE ls.verdict = 'phishing') AS phishing_count
+			FROM latest_scans ls
+			JOIN extracted_urls u ON u.id = ls.url_id
 			JOIN emails e ON e.id = u.email_id
-			WHERE COALESCE(e.received_at, s.created_at) >= now() - interval '24 hours'
+			WHERE COALESCE(e.received_at, ls.created_at) >= now() - interval '24 hours'
 			GROUP BY bucket
 			ORDER BY bucket
 		`
 	case "week":
 		q = `
+			WITH latest_scans AS (
+				SELECT DISTINCT ON (s.url_id)
+					s.url_id,
+					s.created_at,
+					s.verdict
+				FROM scan_results s
+				ORDER BY s.url_id, s.created_at DESC
+			)
 			SELECT
-				date_trunc('day', COALESCE(e.received_at, s.created_at)) AS bucket,
+				date_trunc('day', COALESCE(e.received_at, ls.created_at)) AS bucket,
 				COUNT(*) AS total_count,
-				COUNT(*) FILTER (WHERE s.verdict = 'safe') AS safe_count,
-				COUNT(*) FILTER (WHERE s.verdict = 'suspicious') AS suspicious_count,
-				COUNT(*) FILTER (WHERE s.verdict = 'phishing') AS phishing_count
-			FROM scan_results s
-			JOIN extracted_urls u ON u.id = s.url_id
+				COUNT(*) FILTER (WHERE ls.verdict = 'safe') AS safe_count,
+				COUNT(*) FILTER (WHERE ls.verdict = 'suspicious') AS suspicious_count,
+				COUNT(*) FILTER (WHERE ls.verdict = 'phishing') AS phishing_count
+			FROM latest_scans ls
+			JOIN extracted_urls u ON u.id = ls.url_id
 			JOIN emails e ON e.id = u.email_id
-			WHERE COALESCE(e.received_at, s.created_at) >= now() - interval '7 days'
+			WHERE COALESCE(e.received_at, ls.created_at) >= now() - interval '7 days'
 			GROUP BY bucket
 			ORDER BY bucket
 		`
 	case "month":
 		q = `
+			WITH latest_scans AS (
+				SELECT DISTINCT ON (s.url_id)
+					s.url_id,
+					s.created_at,
+					s.verdict
+				FROM scan_results s
+				ORDER BY s.url_id, s.created_at DESC
+			)
 			SELECT
-				date_trunc('day', COALESCE(e.received_at, s.created_at)) AS bucket,
+				date_trunc('day', COALESCE(e.received_at, ls.created_at)) AS bucket,
 				COUNT(*) AS total_count,
-				COUNT(*) FILTER (WHERE s.verdict = 'safe') AS safe_count,
-				COUNT(*) FILTER (WHERE s.verdict = 'suspicious') AS suspicious_count,
-				COUNT(*) FILTER (WHERE s.verdict = 'phishing') AS phishing_count
-			FROM scan_results s
-			JOIN extracted_urls u ON u.id = s.url_id
+				COUNT(*) FILTER (WHERE ls.verdict = 'safe') AS safe_count,
+				COUNT(*) FILTER (WHERE ls.verdict = 'suspicious') AS suspicious_count,
+				COUNT(*) FILTER (WHERE ls.verdict = 'phishing') AS phishing_count
+			FROM latest_scans ls
+			JOIN extracted_urls u ON u.id = ls.url_id
 			JOIN emails e ON e.id = u.email_id
-			WHERE COALESCE(e.received_at, s.created_at) >= now() - interval '1 month'
+			WHERE COALESCE(e.received_at, ls.created_at) >= now() - interval '1 month'
 			GROUP BY bucket
 			ORDER BY bucket
 		`
 	case "year":
 		q = `
+			WITH latest_scans AS (
+				SELECT DISTINCT ON (s.url_id)
+					s.url_id,
+					s.created_at,
+					s.verdict
+				FROM scan_results s
+				ORDER BY s.url_id, s.created_at DESC
+			)
 			SELECT
-				date_trunc('month', COALESCE(e.received_at, s.created_at)) AS bucket,
+				date_trunc('month', COALESCE(e.received_at, ls.created_at)) AS bucket,
 				COUNT(*) AS total_count,
-				COUNT(*) FILTER (WHERE s.verdict = 'safe') AS safe_count,
-				COUNT(*) FILTER (WHERE s.verdict = 'suspicious') AS suspicious_count,
-				COUNT(*) FILTER (WHERE s.verdict = 'phishing') AS phishing_count
-			FROM scan_results s
-			JOIN extracted_urls u ON u.id = s.url_id
+				COUNT(*) FILTER (WHERE ls.verdict = 'safe') AS safe_count,
+				COUNT(*) FILTER (WHERE ls.verdict = 'suspicious') AS suspicious_count,
+				COUNT(*) FILTER (WHERE ls.verdict = 'phishing') AS phishing_count
+			FROM latest_scans ls
+			JOIN extracted_urls u ON u.id = ls.url_id
 			JOIN emails e ON e.id = u.email_id
-			WHERE COALESCE(e.received_at, s.created_at) >= now() - interval '1 year'
+			WHERE COALESCE(e.received_at, ls.created_at) >= now() - interval '1 year'
 			GROUP BY bucket
 			ORDER BY bucket
 		`

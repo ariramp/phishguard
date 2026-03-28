@@ -18,6 +18,7 @@ const periodSelect = document.querySelector("#period-select");
 const historyVerdictFilter = document.querySelector("#history-verdict-filter");
 const historySearch = document.querySelector("#history-search");
 const refreshButton = document.querySelector("#refresh-all");
+const rescoreButton = document.querySelector("#rescore-existing");
 const exportReportButton = document.querySelector("#export-report");
 const exportSummaryButton = document.querySelector("#export-summary");
 const pollButton = document.querySelector("#poll-once");
@@ -625,6 +626,28 @@ pollButton.addEventListener("click", async () => {
     alert(`Не удалось запустить сканирование: ${error.message}`);
   } finally {
     pollButton.disabled = false;
+  }
+});
+
+rescoreButton.addEventListener("click", async () => {
+  rescoreButton.disabled = true;
+  setToolbarStatus("Пересчитываем уже сохраненные ссылки...", "is-pending");
+  try {
+    const result = await api("/api/v1/rescore", {
+      method: "POST",
+      body: JSON.stringify({ limit: 1000 }),
+    });
+    await refreshAll();
+    const summary = result.summary || {};
+    setToolbarStatus(
+      `Пересчет завершен: обновлено ${summary.rescored || 0} из ${summary.candidates || 0}, ошибок ${summary.failed_count || 0}.`,
+      "is-ok",
+    );
+  } catch (error) {
+    setToolbarStatus(`Пересчет не удался: ${error.message}`, "is-error");
+    alert(`Не удалось пересчитать историю: ${error.message}`);
+  } finally {
+    rescoreButton.disabled = false;
   }
 });
 

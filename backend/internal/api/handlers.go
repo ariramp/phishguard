@@ -322,6 +322,48 @@ func (h *Handlers) PollOnce(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
+type rescoreReq struct {
+	Limit int `json:"limit"`
+}
+
+func (h *Handlers) RescoreExisting(c *gin.Context) {
+	limit := 1000
+	if raw := c.Query("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid limit"})
+			return
+		}
+		limit = parsed
+	}
+
+	var req rescoreReq
+	if c.Request.ContentLength > 0 {
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if req.Limit > 0 {
+			limit = req.Limit
+		}
+	}
+
+	summary, err := h.worker.RescoreExisting(c.Request.Context(), limit)
+	if err != nil {
+		h.logger.Error("rescore existing failed", zap.Error(err))
+		c.JSON(http.StatusBadGateway, gin.H{
+			"error":   err.Error(),
+			"summary": summary,
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "ok",
+		"summary": summary,
+	})
+}
+
 type manualCheckReq struct {
 	URL     string `json:"url" binding:"required"`
 	Subject string `json:"subject"`
@@ -347,20 +389,13 @@ func (h *Handlers) ManualCheck(c *gin.Context) {
 		return
 	}
 
-	verdict := "safe"
-	if risk >= 3 || score >= 0.8 {
-		verdict = "phishing"
-	} else if risk == 2 || score >= 0.5 {
-		verdict = "suspicious"
-	}
-
 	c.JSON(http.StatusOK, gin.H{
 		"url":           req.URL,
 		"subject":       req.Subject,
 		"snippet":       req.Snippet,
 		"score":         score,
 		"risk":          risk,
-		"verdict":       verdict,
+		"verdict":       service.DetermineVerdict(score, risk, features),
 		"model_version": modelVersion,
 		"features":      features,
 	})

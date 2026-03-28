@@ -103,6 +103,22 @@ SHORTENERS = {
     "clck.ru",
 }
 
+BENIGN_URL_HINTS = (
+    "docs",
+    "help",
+    "support",
+    "about",
+    "blog",
+    "news",
+    "privacy",
+    "terms",
+    "contact",
+    "static",
+    "assets",
+    "cdn",
+    "images",
+)
+
 URL_FEATURE_ORDER = [
     "url_length",
     "domain_length",
@@ -498,17 +514,23 @@ class FusionClassifier:
         url_score = float(features["url_score"])
         text_score = float(features["text_score"])
 
-        if url_score >= 0.85:
-            return max(url_score, 0.92)
-        if text_score >= 0.85 and url_score >= 0.50:
-            return max(text_score, 0.9)
+        if url_score >= 0.92:
+            return max(url_score, 0.96)
+        if url_score >= 0.82 and text_score >= 0.55:
+            return max(url_score, text_score * 0.35 + url_score * 0.65, 0.88)
         if features["is_ip"] or features["has_punycode"]:
             return max(url_score, text_score, 0.72)
         if features["brand_similarity"] >= 0.9 and features["suspicious_words_count"] > 0:
-            return max(url_score, 0.82)
-        if url_score >= 0.60 or text_score >= 0.70:
-            return max(url_score, text_score, 0.68)
-        return max(url_score * 0.65 + text_score * 0.35, 0.02)
+            return max(url_score, 0.8)
+        if url_score >= 0.7:
+            return max(url_score, text_score * 0.2 + url_score * 0.8, 0.72)
+        if url_score >= 0.55 and text_score >= 0.8:
+            return max(url_score * 0.75 + text_score * 0.25, 0.66)
+        if text_score >= 0.92 and url_score < 0.4:
+            return max(url_score * 0.5 + text_score * 0.2, 0.34)
+        if url_score >= 0.60 or text_score >= 0.78:
+            return max(url_score * 0.8 + text_score * 0.2, 0.58)
+        return max(url_score * 0.82 + text_score * 0.18, 0.02)
 
     def predict(self, features: dict[str, Any]) -> tuple[float, int, dict[str, Any]]:
         if self.loaded and self._bundle is not None:
@@ -531,9 +553,9 @@ class FusionClassifier:
             mode = "fallback"
 
         score = max(0.0, min(1.0, score))
-        if score >= 0.8:
+        if score >= 0.9:
             risk = 3
-        elif score >= 0.45:
+        elif score >= 0.62:
             risk = 2
         else:
             risk = 1
@@ -593,6 +615,100 @@ class PhishModel:
             },
         }
 
+    def _apply_false_positive_guards(
+        self,
+        final_score: float,
+        risk: int,
+        url_features: dict[str, Any],
+        text_features: dict[str, Any],
+        url_score: float,
+        text_score: float,
+    ) -> tuple[float, int, dict[str, Any]]:
+        host = str(url_features.get("host", "")).lower()
+        benign_hint_count = sum(hint in host for hint in BENIGN_URL_HINTS)
+        benign_structure = (
+            url_features["is_https"]
+            and not url_features["has_ip_host"]
+            and not url_features["has_punycode"]
+            and not url_features["has_at_symbol"]
+            and not url_features["has_shortener"]
+            and url_features["suspicious_keyword_count"] == 0
+            and url_features["subdomain_count"] <= 1
+        )
+
+        trusted_and_clean = (
+            url_features.get("trusted_domain", 0) == 1
+            and benign_structure
+            and text_features["keyword_count"] <= 1
+            and text_features["exclamation_count"] <= 1
+        )
+
+        low_signal_message = (
+            text_features["keyword_count"] == 0
+            and text_features["uppercase_ratio"] < 0.15
+            and text_features["exclamation_count"] == 0
+        )
+
+        text_only_pressure = (
+            text_score >= 0.8
+            and url_score < 0.45
+            and benign_structure
+            and not url_features["has_ip_host"]
+            and not url_features["has_punycode"]
+            and url_features["brand_similarity"] < 0.9
+        )
+
+        clean_popular_domain = (
+            url_features.get("trusted_domain", 0) == 1
+            and benign_structure
+            and url_score < 0.35
+        )
+
+        guard_info = {
+            "benign_structure": _bool_to_int(benign_structure),
+            "trusted_and_clean": _bool_to_int(trusted_and_clean),
+            "low_signal_message": _bool_to_int(low_signal_message),
+            "text_only_pressure": _bool_to_int(text_only_pressure),
+            "clean_popular_domain": _bool_to_int(clean_popular_domain),
+            "benign_hint_count": benign_hint_count,
+        }
+
+        adjusted_score = final_score
+        adjusted_risk = risk
+
+        if trusted_and_clean and url_score < 0.55 and text_score < 0.45:
+            adjusted_score = min(adjusted_score, 0.18)
+            adjusted_risk = 1
+            guard_info["guard_applied"] = "trusted_domain_cap"
+            return adjusted_score, adjusted_risk, guard_info
+
+        if clean_popular_domain and text_score < 0.92:
+            adjusted_score = min(adjusted_score, 0.22)
+            adjusted_risk = 1
+            guard_info["guard_applied"] = "clean_popular_domain_cap"
+            return adjusted_score, adjusted_risk, guard_info
+
+        if text_only_pressure and final_score < 0.9:
+            adjusted_score = min(adjusted_score, 0.42)
+            adjusted_risk = min(adjusted_risk, 1)
+            guard_info["guard_applied"] = "text_only_pressure_cap"
+            return adjusted_score, adjusted_risk, guard_info
+
+        if benign_structure and low_signal_message and final_score < 0.85:
+            adjusted_score = min(adjusted_score, 0.28)
+            adjusted_risk = min(adjusted_risk, 1)
+            guard_info["guard_applied"] = "benign_structure_cap"
+            return adjusted_score, adjusted_risk, guard_info
+
+        if benign_hint_count > 0 and url_score < 0.45 and text_score < 0.4:
+            adjusted_score = min(adjusted_score, 0.24)
+            adjusted_risk = min(adjusted_risk, 1)
+            guard_info["guard_applied"] = "benign_hint_cap"
+            return adjusted_score, adjusted_risk, guard_info
+
+        guard_info["guard_applied"] = ""
+        return adjusted_score, adjusted_risk, guard_info
+
     def predict(self, url: str, subject: str, snippet: str):
         url_score, url_features = self.url_model.predict(url)
         text_score, text_features = self.text_model.predict(subject, snippet)
@@ -609,6 +725,14 @@ class PhishModel:
         }
 
         final_score, risk, fusion_info = self.fusion_model.predict(fusion_features)
+        final_score, risk, guard_info = self._apply_false_positive_guards(
+            final_score,
+            risk,
+            url_features,
+            text_features,
+            url_score,
+            text_score,
+        )
         self.model_version = self._compose_version()
 
         features = {
@@ -618,8 +742,10 @@ class PhishModel:
             "components": {
                 "url_score": round(url_score, 6),
                 "text_score": round(text_score, 6),
+                "final_score": round(final_score, 6),
                 "fusion_mode": fusion_info["inference_mode"],
             },
+            "postprocess": guard_info,
         }
         if "load_error" in fusion_info:
             features["fusion_load_error"] = fusion_info["load_error"]

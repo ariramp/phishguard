@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -86,6 +87,87 @@ func (w *Worker) PollOnce(ctx context.Context) error {
 	return nil
 }
 
+type RescoreSummary struct {
+	Candidates      int `json:"candidates"`
+	Rescored        int `json:"rescored"`
+	SafeCount       int `json:"safe_count"`
+	SuspiciousCount int `json:"suspicious_count"`
+	PhishingCount   int `json:"phishing_count"`
+	FailedCount     int `json:"failed_count"`
+}
+
+func (w *Worker) RescoreExisting(ctx context.Context, limit int) (*RescoreSummary, error) {
+	candidates, err := w.db.GetRescoreCandidates(ctx, limit)
+	if err != nil {
+		return nil, err
+	}
+
+	summary := &RescoreSummary{
+		Candidates: len(candidates),
+	}
+
+	for _, item := range candidates {
+		score, risk, modelVersion, features, err := w.ml.PredictURL(
+			ctx,
+			item.NormalizedURL,
+			item.EmailSubject,
+			firstSnippet(item.EmailBodyText, item.EmailBodyHTML),
+		)
+		if err != nil {
+			summary.FailedCount++
+			w.logger.Error("rescore predict failed",
+				zap.String("url", item.NormalizedURL),
+				zap.Error(err),
+			)
+			continue
+		}
+
+		verdict := DetermineVerdict(score, risk, features)
+
+		_, err = w.db.InsertScanResult(ctx, store.ScanResultRecord{
+			URLID:        item.URLID,
+			ModelVersion: modelVersion,
+			Score:        score,
+			Risk:         risk,
+			Features:     features,
+			Verdict:      verdict,
+		})
+		if err != nil {
+			summary.FailedCount++
+			w.logger.Error("insert rescored result failed",
+				zap.String("url", item.NormalizedURL),
+				zap.Error(err),
+			)
+			continue
+		}
+
+		summary.Rescored++
+		switch verdict {
+		case "phishing":
+			summary.PhishingCount++
+		case "suspicious":
+			summary.SuspiciousCount++
+		default:
+			summary.SafeCount++
+		}
+	}
+
+	w.logger.Info("rescore existing finished",
+		zap.Int("candidates", summary.Candidates),
+		zap.Int("rescored", summary.Rescored),
+		zap.Int("safe", summary.SafeCount),
+		zap.Int("suspicious", summary.SuspiciousCount),
+		zap.Int("phishing", summary.PhishingCount),
+		zap.Int("failed", summary.FailedCount),
+	)
+
+	if summary.Rescored == 0 && summary.FailedCount > 0 {
+		return summary, fmt.Errorf("failed to rescore all selected URLs")
+	}
+
+	return summary, nil
+}
+
 func (w *Worker) processAccount(ctx context.Context, acc store.Account) error {
 	msgs, maxUID, err := w.mailClient.FetchNewMessages(ctx, acc)
 	if err != nil {
@@ -154,12 +236,9 @@ func (w *Worker) processAccount(ctx context.Context, acc store.Account) error {
 				continue
 			}
 
-			verdict := "safe"
-			if risk >= 3 || score >= 0.8 {
-				verdict = "phishing"
+			verdict := DetermineVerdict(score, risk, features)
+			if verdict == "phishing" {
 				highRiskDetected = true
-			} else if risk == 2 || score >= 0.5 {
-				verdict = "suspicious"
 			}
 
 			_, err = w.db.InsertScanResult(ctx, store.ScanResultRecord{

@@ -44,6 +44,7 @@ func NewRouter(db *store.DB, worker *service.Worker, ml mlclient.Client, logger 
 	r.GET("/api/v1/stats/timeseries", h.GetTimeSeriesStats)
 
 	r.POST("/api/v1/poll/once", h.PollOnce)
+	r.POST("/api/v1/rescore", h.RescoreExisting)
 	r.POST("/api/v1/check/url", h.ManualCheck)
 
 	webDir := resolveWebDir()
