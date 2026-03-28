@@ -13,8 +13,8 @@
           <p class="eyebrow">Phishing Monitoring Console</p>
           <h1>PhishGuard</h1>
           <p class="hero-copy">
-            Панель оператора для подключения почтовых ящиков, запуска сканирования
-            и просмотра результатов детекции фишинговых ссылок.
+            Панель оператора для подключения почтовых ящиков, запуска сканирования,
+            просмотра результатов детекции и управления службой.
           </p>
         </div>
         <div class="hero-side">
@@ -27,8 +27,11 @@
           </div>
           <div class="toolbar">
             <button id="refresh-all" class="button button-secondary">Обновить данные</button>
+            <button id="export-report" class="button button-secondary">Export CSV</button>
+            <button id="export-summary" class="button button-secondary">Summary CSV</button>
             <button id="poll-once" class="button">Сканировать сейчас</button>
           </div>
+          <p id="toolbar-status" class="muted toolbar-status">Готово к обновлению данных и запуску сканирования.</p>
         </div>
       </header>
 
@@ -39,6 +42,16 @@
             <p>Сводные показатели по аккаунтам, письмам, ссылкам и результатам детекции.</p>
           </div>
           <div class="stats-grid" id="stats-grid"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Сводный отчет</h2>
+            <p>Агрегированная информация по текущему периоду для демонстрации и приложения к диплому.</p>
+          </div>
+          <div id="summary-report" class="summary-report">
+            <p class="muted">Отчет загружается...</p>
+          </div>
         </section>
 
         <section class="panel">
@@ -59,10 +72,13 @@
 
         <section class="panel form-panel">
           <div class="panel-head">
-            <h2>Подключение почтового аккаунта</h2>
-            <p>Добавьте IMAP-ящик для автоматического мониторинга входящих писем.</p>
+            <div>
+              <h2 id="account-form-title">Подключение почтового аккаунта</h2>
+              <p>Добавьте IMAP-ящик для автоматического мониторинга входящих писем.</p>
+            </div>
           </div>
           <form id="account-form" class="form-grid">
+            <input type="hidden" name="account_id" />
             <label>
               <span>Email address</span>
               <input name="email_address" type="email" required placeholder="user@example.com" />
@@ -81,7 +97,7 @@
             </label>
             <label class="wide">
               <span>Password</span>
-              <input name="password" type="password" required />
+              <input name="password" type="password" placeholder="Введите новый пароль только если нужно изменить" />
             </label>
             <label>
               <span>Mailbox</span>
@@ -96,6 +112,7 @@
               <select name="action_on_high">
                 <option value="MOVE" selected>MOVE</option>
                 <option value="TAG">TAG</option>
+                <option value="COPY">COPY</option>
                 <option value="NONE">NONE</option>
               </select>
             </label>
@@ -107,8 +124,13 @@
               <input name="imap_tls" type="checkbox" checked />
               <span>Use TLS</span>
             </label>
+            <label class="checkbox">
+              <input name="reset_last_uid" type="checkbox" />
+              <span>Reset last UID after update</span>
+            </label>
             <div class="form-actions wide">
-              <button type="submit" class="button">Сохранить аккаунт</button>
+              <button type="submit" id="account-submit" class="button">Сохранить аккаунт</button>
+              <button type="button" id="account-cancel" class="button button-secondary hidden">Отменить редактирование</button>
               <p id="form-status" class="muted">Заполните форму и сохраните настройки.</p>
             </div>
           </form>
@@ -126,11 +148,11 @@
             </label>
             <label class="wide">
               <span>Subject</span>
-              <input name="subject" placeholder="Subject line" />
+              <input name="subject" placeholder="Тема письма" />
             </label>
             <label class="wide">
               <span>Snippet</span>
-              <input name="snippet" placeholder="Body preview or suspicious text" />
+              <input name="snippet" placeholder="Фрагмент письма или подозрительный текст" />
             </label>
             <div class="form-actions wide">
               <button type="submit" class="button">Проверить ссылку</button>
@@ -148,6 +170,16 @@
             <p>Текущие настройки мониторинга и состояние последнего обработанного UID.</p>
           </div>
           <div id="accounts-list" class="account-list"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Последние ошибки службы</h2>
+            <p>Ошибки IMAP, polling и действий над письмами, сохраненные сервером.</p>
+          </div>
+          <div id="errors-list" class="errors-list">
+            <p class="muted">Ошибок пока нет.</p>
+          </div>
         </section>
 
         <section class="panel wide-panel">

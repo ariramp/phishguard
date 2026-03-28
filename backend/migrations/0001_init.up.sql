@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS model_versions (
 CREATE TABLE IF NOT EXISTS accounts (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   email_address TEXT NOT NULL,
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
   imap_host TEXT NOT NULL,
   imap_port INT NOT NULL DEFAULT 993,
   imap_tls BOOLEAN NOT NULL DEFAULT TRUE,

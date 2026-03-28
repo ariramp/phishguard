@@ -27,12 +27,19 @@ func NewRouter(db *store.DB, worker *service.Worker, ml mlclient.Client, logger 
 	}
 
 	r.GET("/healthz", h.Healthz)
+	r.GET("/api/v1/system/status", h.SystemStatus)
 
 	r.GET("/api/v1/accounts", h.ListAccounts)
+	r.GET("/api/v1/accounts/errors", h.ListAccountErrors)
 	r.POST("/api/v1/accounts", h.CreateAccount)
+	r.PATCH("/api/v1/accounts/:accountID", h.UpdateAccount)
+	r.DELETE("/api/v1/accounts/:accountID", h.DeleteAccount)
 
 	r.GET("/api/v1/history", h.GetHistory)
 	r.GET("/api/v1/history/:emailID", h.GetHistoryDetails)
+	r.GET("/api/v1/reports/detections.csv", h.ExportDetectionsCSV)
+	r.GET("/api/v1/reports/summary", h.GetSummaryReport)
+	r.GET("/api/v1/reports/summary.csv", h.ExportSummaryCSV)
 	r.GET("/api/v1/stats", h.GetStats)
 	r.GET("/api/v1/stats/timeseries", h.GetTimeSeriesStats)
 

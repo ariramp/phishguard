@@ -12,6 +12,7 @@ import (
 
 type Client interface {
 	PredictURL(ctx context.Context, url string, subject string, snippet string) (float32, int16, string, map[string]any, error)
+	Status(ctx context.Context) (map[string]any, error)
 }
 
 type httpClient struct {
@@ -74,4 +75,29 @@ func (h *httpClient) PredictURL(ctx context.Context, url string, subject string,
 	}
 
 	return pr.Score, pr.Risk, pr.ModelVersion, pr.Features, nil
+}
+
+func (h *httpClient) Status(ctx context.Context) (map[string]any, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, h.baseURL+"/v1/model", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := h.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("ml service returned %s: %s", resp.Status, string(body))
+	}
+
+	var payload map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, err
+	}
+
+	return payload, nil
 }

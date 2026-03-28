@@ -129,6 +129,22 @@ button {
   align-items: center;
 }
 
+.toolbar-status {
+  margin: 10px 0 0;
+}
+
+.toolbar-status.is-ok {
+  color: var(--safe);
+}
+
+.toolbar-status.is-pending {
+  color: var(--warn);
+}
+
+.toolbar-status.is-error {
+  color: var(--danger);
+}
+
 .history-controls {
   flex-wrap: wrap;
   justify-content: flex-end;
@@ -153,6 +169,16 @@ button {
   background: white;
   color: var(--brand);
   border: 1px solid rgba(22, 93, 74, 0.24);
+}
+
+.button-danger {
+  background: white;
+  color: var(--danger);
+  border: 1px solid rgba(179, 66, 50, 0.28);
+}
+
+.hidden {
+  display: none;
 }
 
 .layout {
@@ -291,6 +317,94 @@ select {
   gap: 12px;
 }
 
+.errors-list {
+  display: grid;
+  gap: 12px;
+}
+
+.summary-report {
+  display: grid;
+  gap: 16px;
+}
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.summary-lists {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.summary-card {
+  padding: 16px;
+  border-radius: 20px;
+  background: var(--panel-strong);
+  border: 1px solid var(--line);
+}
+
+.summary-card h3 {
+  margin: 0 0 10px;
+  font-size: 18px;
+}
+
+.summary-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.summary-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.75);
+  border: 1px solid var(--line);
+}
+
+.error-card {
+  padding: 16px;
+  border-radius: 20px;
+  background: #fff7f4;
+  border: 1px solid rgba(179, 66, 50, 0.18);
+}
+
+.error-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.error-time,
+.error-stage {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.error-stage {
+  margin-top: 8px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.error-message {
+  margin: 8px 0 12px;
+}
+
+.pill-error {
+  background: #fde0db;
+  color: var(--danger);
+}
+
 .result-card {
   margin-top: 16px;
   padding: 16px;
@@ -365,11 +479,25 @@ select {
   padding: 16px;
 }
 
+.account-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
 .account-meta {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
   margin-top: 10px;
+}
+
+.account-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 14px;
 }
 
 .pill {
@@ -475,7 +603,9 @@ tbody tr:hover {
 
   .stats-grid,
   .form-grid,
-  .result-grid {
+  .result-grid,
+  .summary-grid,
+  .summary-lists {
     grid-template-columns: 1fr;
   }
 

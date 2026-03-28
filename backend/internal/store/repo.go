@@ -8,11 +8,13 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 type Account struct {
 	ID                  uuid.UUID `json:"id"`
 	EmailAddress        string    `json:"email_address"`
+	Enabled             bool      `json:"enabled"`
 	IMAPHost            string    `json:"imap_host"`
 	IMAPPort            int       `json:"imap_port"`
 	IMAPTLS             bool      `json:"imap_tls"`
@@ -38,6 +40,38 @@ type CreateAccountParams struct {
 	PollIntervalSeconds int    `json:"poll_interval_seconds"`
 	ActionOnHigh        string `json:"action_on_high"`
 	TargetMailbox       string `json:"target_mailbox"`
+}
+
+type UpdateAccountParams struct {
+	EmailAddress        *string `json:"email_address"`
+	Enabled             *bool   `json:"enabled"`
+	IMAPHost            *string `json:"imap_host"`
+	IMAPPort            *int    `json:"imap_port"`
+	IMAPTLS             *bool   `json:"imap_tls"`
+	Username            *string `json:"username"`
+	Password            *string `json:"password"`
+	SourceMailbox       *string `json:"source_mailbox"`
+	PollIntervalSeconds *int    `json:"poll_interval_seconds"`
+	ActionOnHigh        *string `json:"action_on_high"`
+	TargetMailbox       *string `json:"target_mailbox"`
+}
+
+type DeleteAccountSummary struct {
+	AccountID     uuid.UUID `json:"account_id"`
+	EmailAddress  string    `json:"email_address"`
+	EmailsCount   int       `json:"emails_count"`
+	URLsCount     int       `json:"urls_count"`
+	ScansCount    int       `json:"scans_count"`
+	DeletedAt     time.Time `json:"deleted_at"`
+}
+
+type AccountErrorRecord struct {
+	AccountID    *uuid.UUID     `json:"account_id,omitempty"`
+	EmailAddress string         `json:"email_address"`
+	Stage        string         `json:"stage"`
+	ErrorMessage string         `json:"error_message"`
+	Details      map[string]any `json:"details"`
+	CreatedAt    time.Time      `json:"created_at"`
 }
 
 type EmailRecord struct {
@@ -75,11 +109,11 @@ type ScanResultRecord struct {
 func (d *DB) CreateAccount(ctx context.Context, p CreateAccountParams) (*Account, error) {
 	q := `
 		INSERT INTO accounts (
-			email_address, imap_host, imap_port, imap_tls, username, password_enc,
+			email_address, enabled, imap_host, imap_port, imap_tls, username, password_enc,
 			source_mailbox, poll_interval_seconds, action_on_high, target_mailbox
 		)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-		RETURNING id, email_address, imap_host, imap_port, imap_tls, username, password_enc,
+		VALUES ($1,TRUE,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+		RETURNING id, email_address, enabled, imap_host, imap_port, imap_tls, username, password_enc,
 		          source_mailbox, poll_interval_seconds, action_on_high, target_mailbox, last_uid, created_at, updated_at
 	`
 
@@ -100,6 +134,7 @@ func (d *DB) CreateAccount(ctx context.Context, p CreateAccountParams) (*Account
 	).Scan(
 		&a.ID,
 		&a.EmailAddress,
+		&a.Enabled,
 		&a.IMAPHost,
 		&a.IMAPPort,
 		&a.IMAPTLS,
@@ -122,7 +157,7 @@ func (d *DB) CreateAccount(ctx context.Context, p CreateAccountParams) (*Account
 
 func (d *DB) ListAccounts(ctx context.Context) ([]Account, error) {
 	q := `
-		SELECT id, email_address, imap_host, imap_port, imap_tls, username, password_enc,
+		SELECT id, email_address, enabled, imap_host, imap_port, imap_tls, username, password_enc,
 		       source_mailbox, poll_interval_seconds, action_on_high, target_mailbox, last_uid, created_at, updated_at
 		FROM accounts
 		ORDER BY created_at DESC
@@ -140,6 +175,7 @@ func (d *DB) ListAccounts(ctx context.Context) ([]Account, error) {
 		if err := rows.Scan(
 			&a.ID,
 			&a.EmailAddress,
+			&a.Enabled,
 			&a.IMAPHost,
 			&a.IMAPPort,
 			&a.IMAPTLS,
@@ -159,6 +195,211 @@ func (d *DB) ListAccounts(ctx context.Context) ([]Account, error) {
 	}
 
 	return items, rows.Err()
+}
+
+func (d *DB) GetAccountByID(ctx context.Context, accountID uuid.UUID) (*Account, error) {
+	q := `
+		SELECT id, email_address, enabled, imap_host, imap_port, imap_tls, username, password_enc,
+		       source_mailbox, poll_interval_seconds, action_on_high, target_mailbox, last_uid, created_at, updated_at
+		FROM accounts
+		WHERE id = $1
+	`
+
+	var a Account
+	err := d.Pool.QueryRow(ctx, q, accountID).Scan(
+		&a.ID,
+		&a.EmailAddress,
+		&a.Enabled,
+		&a.IMAPHost,
+		&a.IMAPPort,
+		&a.IMAPTLS,
+		&a.Username,
+		&a.PasswordEnc,
+		&a.SourceMailbox,
+		&a.PollIntervalSeconds,
+		&a.ActionOnHigh,
+		&a.TargetMailbox,
+		&a.LastUID,
+		&a.CreatedAt,
+		&a.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return &a, nil
+}
+
+func (d *DB) UpdateAccount(ctx context.Context, accountID uuid.UUID, p UpdateAccountParams) (*Account, error) {
+	current, err := d.GetAccountByID(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+
+	emailAddress := current.EmailAddress
+	if p.EmailAddress != nil {
+		emailAddress = *p.EmailAddress
+	}
+
+	enabled := current.Enabled
+	if p.Enabled != nil {
+		enabled = *p.Enabled
+	}
+
+	imapHost := current.IMAPHost
+	if p.IMAPHost != nil {
+		imapHost = *p.IMAPHost
+	}
+
+	imapPort := current.IMAPPort
+	if p.IMAPPort != nil {
+		imapPort = *p.IMAPPort
+	}
+
+	imapTLS := current.IMAPTLS
+	if p.IMAPTLS != nil {
+		imapTLS = *p.IMAPTLS
+	}
+
+	username := current.Username
+	if p.Username != nil {
+		username = *p.Username
+	}
+
+	passwordEnc := current.PasswordEnc
+	if p.Password != nil && *p.Password != "" {
+		passwordEnc = []byte(*p.Password)
+	}
+
+	sourceMailbox := current.SourceMailbox
+	if p.SourceMailbox != nil {
+		sourceMailbox = *p.SourceMailbox
+	}
+
+	pollIntervalSeconds := current.PollIntervalSeconds
+	if p.PollIntervalSeconds != nil {
+		pollIntervalSeconds = *p.PollIntervalSeconds
+	}
+
+	actionOnHigh := current.ActionOnHigh
+	if p.ActionOnHigh != nil {
+		actionOnHigh = *p.ActionOnHigh
+	}
+
+	targetMailbox := current.TargetMailbox
+	if p.TargetMailbox != nil {
+		targetMailbox = *p.TargetMailbox
+	}
+
+	q := `
+		UPDATE accounts
+		SET email_address = $2,
+		    enabled = $3,
+		    imap_host = $4,
+		    imap_port = $5,
+		    imap_tls = $6,
+		    username = $7,
+		    password_enc = $8,
+		    source_mailbox = $9,
+		    poll_interval_seconds = $10,
+		    action_on_high = $11,
+		    target_mailbox = $12,
+		    updated_at = now()
+		WHERE id = $1
+		RETURNING id, email_address, enabled, imap_host, imap_port, imap_tls, username, password_enc,
+		          source_mailbox, poll_interval_seconds, action_on_high, target_mailbox, last_uid, created_at, updated_at
+	`
+
+	var a Account
+	err = d.Pool.QueryRow(
+		ctx,
+		q,
+		accountID,
+		emailAddress,
+		enabled,
+		imapHost,
+		imapPort,
+		imapTLS,
+		username,
+		passwordEnc,
+		sourceMailbox,
+		pollIntervalSeconds,
+		actionOnHigh,
+		targetMailbox,
+	).Scan(
+		&a.ID,
+		&a.EmailAddress,
+		&a.Enabled,
+		&a.IMAPHost,
+		&a.IMAPPort,
+		&a.IMAPTLS,
+		&a.Username,
+		&a.PasswordEnc,
+		&a.SourceMailbox,
+		&a.PollIntervalSeconds,
+		&a.ActionOnHigh,
+		&a.TargetMailbox,
+		&a.LastUID,
+		&a.CreatedAt,
+		&a.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return &a, nil
+}
+
+func (d *DB) DeleteAccount(ctx context.Context, accountID uuid.UUID) (*DeleteAccountSummary, error) {
+	tx, err := d.Pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	summary := &DeleteAccountSummary{AccountID: accountID}
+
+	err = tx.QueryRow(ctx, `
+		SELECT email_address
+		FROM accounts
+		WHERE id = $1
+	`, accountID).Scan(&summary.EmailAddress)
+	if err != nil {
+		return nil, err
+	}
+
+	err = tx.QueryRow(ctx, `
+		SELECT
+			COUNT(DISTINCT e.id) AS emails_count,
+			COUNT(DISTINCT u.id) AS urls_count,
+			COUNT(DISTINCT s.id) AS scans_count
+		FROM emails e
+		LEFT JOIN extracted_urls u ON u.email_id = e.id
+		LEFT JOIN scan_results s ON s.url_id = u.id
+		WHERE e.account_id = $1
+	`, accountID).Scan(&summary.EmailsCount, &summary.URLsCount, &summary.ScansCount)
+	if err != nil {
+		return nil, err
+	}
+
+	tag, err := tx.Exec(ctx, `
+		DELETE FROM accounts
+		WHERE id = $1
+	`, accountID)
+	if err != nil {
+		return nil, err
+	}
+	if tag.RowsAffected() == 0 {
+		return nil, pgx.ErrNoRows
+	}
+
+	summary.DeletedAt = time.Now().UTC()
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+
+	return summary, nil
 }
 
 func (d *DB) UpdateAccountLastUID(ctx context.Context, accountID uuid.UUID, lastUID int64) error {
@@ -241,6 +482,65 @@ func (d *DB) InsertScanResult(ctx context.Context, s ScanResultRecord) (*ScanRes
 	}
 
 	return &out, nil
+}
+
+func (d *DB) InsertAccountError(ctx context.Context, rec AccountErrorRecord) error {
+	rawDetails, err := json.Marshal(rec.Details)
+	if err != nil {
+		return err
+	}
+
+	_, err = d.Pool.Exec(ctx, `
+		INSERT INTO account_errors (account_id, email_address, stage, error_message, details)
+		VALUES ($1, $2, $3, $4, $5)
+	`, rec.AccountID, rec.EmailAddress, rec.Stage, rec.ErrorMessage, rawDetails)
+	return err
+}
+
+func (d *DB) ListAccountErrors(ctx context.Context, limit int) ([]AccountErrorRecord, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+
+	rows, err := d.Pool.Query(ctx, `
+		SELECT account_id, email_address, stage, error_message, details, created_at
+		FROM account_errors
+		ORDER BY created_at DESC
+		LIMIT $1
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []AccountErrorRecord
+	for rows.Next() {
+		var item AccountErrorRecord
+		var accountID *uuid.UUID
+		var detailsRaw []byte
+		if err := rows.Scan(
+			&accountID,
+			&item.EmailAddress,
+			&item.Stage,
+			&item.ErrorMessage,
+			&detailsRaw,
+			&item.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		if accountID != nil {
+			item.AccountID = accountID
+		}
+		if len(detailsRaw) > 0 {
+			_ = json.Unmarshal(detailsRaw, &item.Details)
+		}
+		if item.Details == nil {
+			item.Details = map[string]any{}
+		}
+		items = append(items, item)
+	}
+
+	return items, rows.Err()
 }
 
 type HistoryItem struct {
@@ -437,6 +737,214 @@ type TimeSeriesItem struct {
 	SafeCount       int       `json:"safe_count"`
 	SuspiciousCount int       `json:"suspicious_count"`
 	PhishingCount   int       `json:"phishing_count"`
+}
+
+type DetectionReportRow struct {
+	CheckedAt      time.Time `json:"checked_at"`
+	EmailAddress   string    `json:"email_address"`
+	Sender         string    `json:"sender"`
+	Subject        string    `json:"subject"`
+	RawURL         string    `json:"raw_url"`
+	NormalizedURL  string    `json:"normalized_url"`
+	Domain         string    `json:"domain"`
+	Score          float32   `json:"score"`
+	Risk           int16     `json:"risk"`
+	Verdict        string    `json:"verdict"`
+	ModelVersion   string    `json:"model_version"`
+}
+
+type SummaryReport struct {
+	Period           string                `json:"period"`
+	GeneratedAt      time.Time             `json:"generated_at"`
+	TotalEmails      int                   `json:"total_emails"`
+	TotalURLs        int                   `json:"total_urls"`
+	TotalScans       int                   `json:"total_scans"`
+	SafeCount        int                   `json:"safe_count"`
+	SuspiciousCount  int                   `json:"suspicious_count"`
+	PhishingCount    int                   `json:"phishing_count"`
+	TopDomains       []SummaryDomainStat   `json:"top_domains"`
+	TopAccounts      []SummaryAccountStat  `json:"top_accounts"`
+}
+
+type SummaryDomainStat struct {
+	Domain string `json:"domain"`
+	Count  int    `json:"count"`
+}
+
+type SummaryAccountStat struct {
+	EmailAddress string `json:"email_address"`
+	Count        int    `json:"count"`
+}
+
+func (d *DB) GetDetectionReport(ctx context.Context, period string, limit int) ([]DetectionReportRow, error) {
+	if limit <= 0 || limit > 5000 {
+		limit = 1000
+	}
+
+	var interval string
+	switch period {
+	case "day":
+		interval = "24 hours"
+	case "week":
+		interval = "7 days"
+	case "month":
+		interval = "1 month"
+	case "year":
+		interval = "1 year"
+	default:
+		return nil, fmt.Errorf("unsupported period: %s", period)
+	}
+
+	rows, err := d.Pool.Query(ctx, `
+		SELECT
+			s.created_at,
+			a.email_address,
+			e.sender,
+			e.subject,
+			u.raw_url,
+			u.normalized_url,
+			u.domain,
+			s.score,
+			s.risk,
+			s.verdict,
+			s.model_version
+		FROM scan_results s
+		JOIN extracted_urls u ON u.id = s.url_id
+		JOIN emails e ON e.id = u.email_id
+		JOIN accounts a ON a.id = e.account_id
+		WHERE COALESCE(e.received_at, s.created_at) >= now() - ($1::interval)
+		ORDER BY s.created_at DESC
+		LIMIT $2
+	`, interval, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []DetectionReportRow
+	for rows.Next() {
+		var item DetectionReportRow
+		if err := rows.Scan(
+			&item.CheckedAt,
+			&item.EmailAddress,
+			&item.Sender,
+			&item.Subject,
+			&item.RawURL,
+			&item.NormalizedURL,
+			&item.Domain,
+			&item.Score,
+			&item.Risk,
+			&item.Verdict,
+			&item.ModelVersion,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+
+	return items, rows.Err()
+}
+
+func (d *DB) GetSummaryReport(ctx context.Context, period string) (*SummaryReport, error) {
+	var interval string
+	switch period {
+	case "day":
+		interval = "24 hours"
+	case "week":
+		interval = "7 days"
+	case "month":
+		interval = "1 month"
+	case "year":
+		interval = "1 year"
+	default:
+		return nil, fmt.Errorf("unsupported period: %s", period)
+	}
+
+	report := &SummaryReport{
+		Period:      period,
+		GeneratedAt: time.Now().UTC(),
+		TopDomains:  []SummaryDomainStat{},
+		TopAccounts: []SummaryAccountStat{},
+	}
+
+	err := d.Pool.QueryRow(ctx, `
+		SELECT
+			COUNT(DISTINCT e.id) AS total_emails,
+			COUNT(DISTINCT u.id) AS total_urls,
+			COUNT(s.id) AS total_scans,
+			COUNT(*) FILTER (WHERE s.verdict = 'safe') AS safe_count,
+			COUNT(*) FILTER (WHERE s.verdict = 'suspicious') AS suspicious_count,
+			COUNT(*) FILTER (WHERE s.verdict = 'phishing') AS phishing_count
+		FROM scan_results s
+		JOIN extracted_urls u ON u.id = s.url_id
+		JOIN emails e ON e.id = u.email_id
+		WHERE COALESCE(e.received_at, s.created_at) >= now() - ($1::interval)
+	`, interval).Scan(
+		&report.TotalEmails,
+		&report.TotalURLs,
+		&report.TotalScans,
+		&report.SafeCount,
+		&report.SuspiciousCount,
+		&report.PhishingCount,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	domainRows, err := d.Pool.Query(ctx, `
+		SELECT u.domain, COUNT(*) AS cnt
+		FROM scan_results s
+		JOIN extracted_urls u ON u.id = s.url_id
+		JOIN emails e ON e.id = u.email_id
+		WHERE COALESCE(e.received_at, s.created_at) >= now() - ($1::interval)
+		GROUP BY u.domain
+		ORDER BY cnt DESC, u.domain
+		LIMIT 10
+	`, interval)
+	if err != nil {
+		return nil, err
+	}
+	defer domainRows.Close()
+
+	for domainRows.Next() {
+		var item SummaryDomainStat
+		if err := domainRows.Scan(&item.Domain, &item.Count); err != nil {
+			return nil, err
+		}
+		report.TopDomains = append(report.TopDomains, item)
+	}
+	if err := domainRows.Err(); err != nil {
+		return nil, err
+	}
+
+	accountRows, err := d.Pool.Query(ctx, `
+		SELECT a.email_address, COUNT(*) AS cnt
+		FROM scan_results s
+		JOIN extracted_urls u ON u.id = s.url_id
+		JOIN emails e ON e.id = u.email_id
+		JOIN accounts a ON a.id = e.account_id
+		WHERE COALESCE(e.received_at, s.created_at) >= now() - ($1::interval)
+		GROUP BY a.email_address
+		ORDER BY cnt DESC, a.email_address
+		LIMIT 10
+	`, interval)
+	if err != nil {
+		return nil, err
+	}
+	defer accountRows.Close()
+
+	for accountRows.Next() {
+		var item SummaryAccountStat
+		if err := accountRows.Scan(&item.EmailAddress, &item.Count); err != nil {
+			return nil, err
+		}
+		report.TopAccounts = append(report.TopAccounts, item)
+	}
+	if err := accountRows.Err(); err != nil {
+		return nil, err
+	}
+
+	return report, nil
 }
 
 func (d *DB) GetTimeSeriesStats(ctx context.Context, period string) ([]TimeSeriesItem, error) {

@@ -53,7 +53,29 @@ func (w *Worker) PollOnce(ctx context.Context) error {
 	}
 
 	for _, acc := range accounts {
+		if !acc.Enabled {
+			w.logger.Info("skip disabled account",
+				zap.String("email", acc.EmailAddress),
+			)
+			continue
+		}
 		if err := w.processAccount(ctx, acc); err != nil {
+			accountID := acc.ID
+			if insertErr := w.db.InsertAccountError(ctx, store.AccountErrorRecord{
+				AccountID:    &accountID,
+				EmailAddress: acc.EmailAddress,
+				Stage:        "process_account",
+				ErrorMessage: err.Error(),
+				Details: map[string]any{
+					"imap_host":       acc.IMAPHost,
+					"source_mailbox":  acc.SourceMailbox,
+					"action_on_high":  acc.ActionOnHigh,
+					"target_mailbox":  acc.TargetMailbox,
+					"poll_interval_s": acc.PollIntervalSeconds,
+				},
+			}); insertErr != nil {
+				w.logger.Error("insert account error failed", zap.Error(insertErr))
+			}
 			w.logger.Error("process account failed",
 				zap.String("email", acc.EmailAddress),
 				zap.Error(err),
@@ -158,6 +180,22 @@ func (w *Worker) processAccount(ctx context.Context, acc store.Account) error {
 
 		if highRiskDetected {
 			if err := w.mailClient.ApplyHighRiskAction(ctx, acc, msg.UID); err != nil {
+				accountID := acc.ID
+				if insertErr := w.db.InsertAccountError(ctx, store.AccountErrorRecord{
+					AccountID:    &accountID,
+					EmailAddress: acc.EmailAddress,
+					Stage:        "apply_high_risk_action",
+					ErrorMessage: err.Error(),
+					Details: map[string]any{
+						"uid":            msg.UID,
+						"message_id":     msg.MessageID,
+						"subject":        msg.Subject,
+						"action_on_high": acc.ActionOnHigh,
+						"target_mailbox": acc.TargetMailbox,
+					},
+				}); insertErr != nil {
+					w.logger.Error("insert account error failed", zap.Error(insertErr))
+				}
 				w.logger.Error("apply high-risk action failed",
 					zap.String("email", acc.EmailAddress),
 					zap.Uint32("uid", msg.UID),
