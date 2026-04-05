@@ -16,7 +16,7 @@ type Config struct {
 func MustLoad() Config {
 	return Config{
 		HTTPAddr:            getenv("HTTP_ADDR", ":8080"),
-		DatabaseURL:         getenv("DATABASE_URL", "postgres://phishguard:phishguard@localhost:5432/phishguard?sslmode=disable"),
+		DatabaseURL:         getenv("DATABASE_URL", "postgres://localdev:localdev@localhost:5432/phishguard?sslmode=disable"),
 		MLBaseURL:           getenv("ML_BASE_URL", "http://localhost:8000"),
 		MLTimeout:           getDuration("ML_TIMEOUT", 2*time.Second),
 		DefaultPollInterval: getDuration("POLL_INTERVAL", 15*time.Minute),

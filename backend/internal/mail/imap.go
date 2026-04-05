@@ -56,7 +56,13 @@ func (c *Client) dial(ctx context.Context, acc store.Account) (*imapclient.Clien
 
 	cli := imapclient.New(conn, nil)
 
-	if err := cli.Login(acc.Username, string(acc.PasswordEnc)).Wait(); err != nil {
+	password, err := store.DecryptPassword(acc.PasswordEnc)
+	if err != nil {
+		cli.Close()
+		return nil, fmt.Errorf("decrypt password: %w", err)
+	}
+
+	if err := cli.Login(acc.Username, password).Wait(); err != nil {
 		cli.Close()
 		return nil, fmt.Errorf("login: %w", err)
 	}

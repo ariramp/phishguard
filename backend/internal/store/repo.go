@@ -57,12 +57,12 @@ type UpdateAccountParams struct {
 }
 
 type DeleteAccountSummary struct {
-	AccountID     uuid.UUID `json:"account_id"`
-	EmailAddress  string    `json:"email_address"`
-	EmailsCount   int       `json:"emails_count"`
-	URLsCount     int       `json:"urls_count"`
-	ScansCount    int       `json:"scans_count"`
-	DeletedAt     time.Time `json:"deleted_at"`
+	AccountID    uuid.UUID `json:"account_id"`
+	EmailAddress string    `json:"email_address"`
+	EmailsCount  int       `json:"emails_count"`
+	URLsCount    int       `json:"urls_count"`
+	ScansCount   int       `json:"scans_count"`
+	DeletedAt    time.Time `json:"deleted_at"`
 }
 
 type AccountErrorRecord struct {
@@ -107,11 +107,11 @@ type ScanResultRecord struct {
 }
 
 type RescoreCandidate struct {
-	URLID          uuid.UUID
-	NormalizedURL  string
-	EmailSubject   string
-	EmailBodyText  string
-	EmailBodyHTML  string
+	URLID         uuid.UUID
+	NormalizedURL string
+	EmailSubject  string
+	EmailBodyText string
+	EmailBodyHTML string
 }
 
 func (d *DB) CreateAccount(ctx context.Context, p CreateAccountParams) (*Account, error) {
@@ -126,7 +126,12 @@ func (d *DB) CreateAccount(ctx context.Context, p CreateAccountParams) (*Account
 	`
 
 	var a Account
-	err := d.Pool.QueryRow(
+	encryptedPassword, err := EncryptPassword(p.Password)
+	if err != nil {
+		return nil, err
+	}
+
+	err = d.Pool.QueryRow(
 		ctx,
 		q,
 		p.EmailAddress,
@@ -134,7 +139,7 @@ func (d *DB) CreateAccount(ctx context.Context, p CreateAccountParams) (*Account
 		p.IMAPPort,
 		p.IMAPTLS,
 		p.Username,
-		[]byte(p.Password),
+		encryptedPassword,
 		p.SourceMailbox,
 		p.PollIntervalSeconds,
 		p.ActionOnHigh,
@@ -276,7 +281,11 @@ func (d *DB) UpdateAccount(ctx context.Context, accountID uuid.UUID, p UpdateAcc
 
 	passwordEnc := current.PasswordEnc
 	if p.Password != nil && *p.Password != "" {
-		passwordEnc = []byte(*p.Password)
+		encryptedPassword, err := EncryptPassword(*p.Password)
+		if err != nil {
+			return nil, err
+		}
+		passwordEnc = encryptedPassword
 	}
 
 	sourceMailbox := current.SourceMailbox
@@ -812,30 +821,30 @@ type TimeSeriesItem struct {
 }
 
 type DetectionReportRow struct {
-	CheckedAt      time.Time `json:"checked_at"`
-	EmailAddress   string    `json:"email_address"`
-	Sender         string    `json:"sender"`
-	Subject        string    `json:"subject"`
-	RawURL         string    `json:"raw_url"`
-	NormalizedURL  string    `json:"normalized_url"`
-	Domain         string    `json:"domain"`
-	Score          float32   `json:"score"`
-	Risk           int16     `json:"risk"`
-	Verdict        string    `json:"verdict"`
-	ModelVersion   string    `json:"model_version"`
+	CheckedAt     time.Time `json:"checked_at"`
+	EmailAddress  string    `json:"email_address"`
+	Sender        string    `json:"sender"`
+	Subject       string    `json:"subject"`
+	RawURL        string    `json:"raw_url"`
+	NormalizedURL string    `json:"normalized_url"`
+	Domain        string    `json:"domain"`
+	Score         float32   `json:"score"`
+	Risk          int16     `json:"risk"`
+	Verdict       string    `json:"verdict"`
+	ModelVersion  string    `json:"model_version"`
 }
 
 type SummaryReport struct {
-	Period           string                `json:"period"`
-	GeneratedAt      time.Time             `json:"generated_at"`
-	TotalEmails      int                   `json:"total_emails"`
-	TotalURLs        int                   `json:"total_urls"`
-	TotalScans       int                   `json:"total_scans"`
-	SafeCount        int                   `json:"safe_count"`
-	SuspiciousCount  int                   `json:"suspicious_count"`
-	PhishingCount    int                   `json:"phishing_count"`
-	TopDomains       []SummaryDomainStat   `json:"top_domains"`
-	TopAccounts      []SummaryAccountStat  `json:"top_accounts"`
+	Period          string               `json:"period"`
+	GeneratedAt     time.Time            `json:"generated_at"`
+	TotalEmails     int                  `json:"total_emails"`
+	TotalURLs       int                  `json:"total_urls"`
+	TotalScans      int                  `json:"total_scans"`
+	SafeCount       int                  `json:"safe_count"`
+	SuspiciousCount int                  `json:"suspicious_count"`
+	PhishingCount   int                  `json:"phishing_count"`
+	TopDomains      []SummaryDomainStat  `json:"top_domains"`
+	TopAccounts     []SummaryAccountStat `json:"top_accounts"`
 }
 
 type SummaryDomainStat struct {
